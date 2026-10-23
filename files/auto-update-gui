@@ -312,12 +312,27 @@ class SettingsDialog(QDialog):
         link = make_label(f'<a href="https://github.com/{REPO}" style="color:{theme["accent"]}">github.com/{REPO}</a>')
         link.setOpenExternalLinks(True); c.lay.addWidget(link)
         row = QHBoxLayout(); c.lay.addLayout(row)
-        b = QPushButton("Jetzt nach Tool-Update suchen"); b.clicked.connect(lambda: (win.check_self_update(True), win.show_window()))
-        row.addWidget(b); row.addStretch()
+        self.chk_btn = QPushButton("Jetzt nach Tool-Update suchen"); self.chk_btn.clicked.connect(self.check_tool)
+        row.addWidget(self.chk_btn)
+        self.inst_btn = QPushButton("Jetzt installieren"); self.inst_btn.setObjectName("primary"); self.inst_btn.hide()
+        self.inst_btn.clicked.connect(win.self_update); row.addWidget(self.inst_btn); row.addStretch()
+        self.chk_msg = make_label("", "desc", True); c.lay.addWidget(self.chk_msg)
+        win.ver_cb = self.show_result            # Ergebnis der Prüfung hier im Dialog anzeigen
+        self.finished.connect(lambda *_: setattr(win, "ver_cb", None))
 
         row = QHBoxLayout(); lay.addLayout(row); row.addStretch()
         b = QPushButton("Fertig"); b.setObjectName("primary"); b.clicked.connect(self.accept); row.addWidget(b)
         self.setFixedHeight(self.layout().totalHeightForWidth(540) if self.layout().hasHeightForWidth() else self.sizeHint().height())
+
+    def check_tool(self):
+        self.chk_btn.setEnabled(False); self.chk_btn.setText("Suche …"); self.inst_btn.hide()
+        self.chk_msg.setText("Frage GitHub nach der neuesten Version …")
+        self.win.check_self_update(True)
+        if not self.win.selfproc: self.show_result("Prüfung nicht möglich.", False)   # Prüfung lief nicht an
+
+    def show_result(self, text, new=False):
+        self.chk_btn.setEnabled(True); self.chk_btn.setText("Jetzt nach Tool-Update suchen")
+        self.chk_msg.setText(text); self.inst_btn.setVisible(new)
 
     def design_changed(self, *_):
         cfg.setValue("theme", self.theme_box.currentData()); cfg.setValue("accent", self.accent_box.currentData())
@@ -339,6 +354,7 @@ class Win(QWidget):
         self.notified = 0
         self.selfproc = None
         self.manual = False
+        self.ver_cb = None
         self.upd_tag = self.upd_url = ""
         self.notified_ver = ""
         self.setObjectName("root")
@@ -745,7 +761,10 @@ class Win(QWidget):
 
     # ---- Selbst-Update des Tools (GitHub-Releases)
     def check_self_update(self, force=False):
-        if self.selfproc or not (force is True or flag("selfcheck")): return
+        if self.selfproc:
+            if force is True and self.ver_cb: self.ver_cb("Eine Prüfung läuft bereits …", False)
+            return
+        if not (force is True or flag("selfcheck")): return
         self.manual = force is True
         p = self.selfproc = QProcess(self)
         p.finished.connect(lambda code, _s: self.self_check_done(code, bytes(p.readAllStandardOutput()).decode()))
@@ -762,6 +781,7 @@ class Win(QWidget):
         manual, self.manual = self.manual, False
         if not tag:
             self.st_ver.setText(f"{VERSION} (Update-Prüfung nicht möglich)")
+            if self.ver_cb: self.ver_cb("✕ Prüfung nicht möglich – keine Verbindung zu GitHub oder noch kein Release.", False)
             if manual: self.tray.showMessage("Tool-Update", "Prüfung nicht möglich (keine Verbindung zu GitHub?).", QSystemTrayIcon.MessageIcon.Warning)
             return
         if vtuple(tag) > vtuple(VERSION):
@@ -771,6 +791,7 @@ class Win(QWidget):
             self.upd_notes.setText(notes[:400] + ("…" if len(notes) > 400 else "") or "Keine Versionshinweise.")
             self.upd_card.show()
             self.act_upd.setText(f"⬆ Tool auf {tag} aktualisieren"); self.act_upd.setVisible(True)
+            if self.ver_cb: self.ver_cb(f"🎉 Neue Version {tag} verfügbar (installiert: {VERSION}).", True)
             self.st_ver.setText(f"{VERSION} → {tag} verfügbar")
             if self.notified_ver != tag:
                 self.notified_ver = tag
@@ -778,6 +799,7 @@ class Win(QWidget):
                                       QSystemTrayIcon.MessageIcon.Information)
         else:
             self.upd_card.hide(); self.act_upd.setVisible(False); self.st_ver.setText(f"{VERSION} (aktuell)")
+            if self.ver_cb: self.ver_cb(f"✓ Du hast die aktuelle Version ({VERSION}).", False)
             if manual: self.tray.showMessage("Tool-Update", f"Du nutzt die aktuelle Version {VERSION}.", QSystemTrayIcon.MessageIcon.Information)
 
     def self_update(self):
