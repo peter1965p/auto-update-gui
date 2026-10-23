@@ -42,7 +42,7 @@ esac
   echo "[Timer]"
   echo "OnCalendar="
   echo "OnBootSec="
-  if [ "$MODE" = boot ]; then echo "OnBootSec=5min"; else echo "OnCalendar=$CAL"; fi
+  if [ "$MODE" = boot ]; then echo "OnBootSec=5min"; else echo "OnCalendar=$CAL"; echo "WakeSystem=true"; fi
 } > /etc/systemd/system/auto-update.timer.d/schedule.conf
 
 systemctl daemon-reload

@@ -11,7 +11,9 @@ Man sieht jederzeit, **was** das Tool gerade tut – und es ersetzt das Cachy-Up
 
 ## Features
 
-- **Zeitplan** per systemd-Timer: täglich, wöchentlich oder 5 Min. nach dem Start
+- **Zeitplan** per systemd-Timer: täglich, wöchentlich oder 5 Min. nach dem Start – läuft auch nachts ohne Login,
+  weckt den Rechner aus dem Standby (`WakeSystem`), verhindert Standby während des Updates und holt
+  verpasste Läufe nach dem nächsten Start nach (`Persistent`)
 - **Btrfs-Snapshot** mit Snapper vor jedem Update (optional)
 - **AUR-Updates** über paru (optional, mit Sicherheitshinweis)
 - **Ablaufanzeige** Snapshot → pacman → AUR mit Live-Status, Fortschrittsbalken und Live-Log
