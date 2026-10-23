@@ -61,6 +61,8 @@ def fmt_delta(secs):
 
 def palette_for(app):
     dark = app.palette().color(QPalette.ColorRole.Window).lightness() < 128
+    for a in sys.argv:  # --theme=dark|light erzwingt ein Theme
+        if a.startswith("--theme="): dark = a.endswith("dark")
     t = dict(dark=dark, accent=app.palette().color(QPalette.ColorRole.Highlight).name(),
              ok="#2ecc71", warn="#f5a623", err="#e5534b")
     if dark:
