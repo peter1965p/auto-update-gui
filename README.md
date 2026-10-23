@@ -18,16 +18,23 @@ Man sieht jederzeit, **was** das Tool gerade tut – und es ersetzt das Cachy-Up
 - **AUR-Updates** über paru (optional, mit Sicherheitshinweis)
 - **Ablaufanzeige** Snapshot → pacman → AUR mit Live-Status, Fortschrittsbalken und Live-Log
 - **Systray** mit Update-Zähler als Badge und Benachrichtigung; Check alle 3 Stunden
-- Animierte Switches, Karten-Layout, passt sich dem hellen/dunklen Theme an
+- Animierte Switches, Karten-Layout; **Einstellungen** (⚙ im Fenster oder Tray-Menü): Farbschema hell/dunkel/System,
+  Akzentfarbe, Prüfintervall, Benachrichtigungen, Autostart – alles live umschaltbar
 - **Selbst-Update:** prüft GitHub-Releases; bei neuer Version erscheint ein Hinweis mit Knopf „Jetzt aktualisieren“
   (Passwortabfrage via `pkexec`, danach Neustart der GUI)
 - Startet beim Login automatisch im Tray (`--tray`); „Schließen“ minimiert nur ins Systray, komplett beenden über Rechtsklick auf das Tray-Icon → „Verlassen“
 
 ## Installation
 
+Direkt aus Git:
+
 ```bash
-sudo ./install.sh
+git clone --depth 1 https://github.com/peter1965p/auto-update-gui.git
+cd auto-update-gui && sudo ./install.sh
 ```
+
+Updates des Tools selbst kommen danach über das Tray-Menü („Nach Tool-Update suchen“ / „Tool auf vX aktualisieren“)
+oder den Hinweis im Fenster. Deinstallieren: `sudo ./uninstall.sh`.
 
 Benötigt: `python-pyqt6`, `git`, `curl`, `pacman-contrib` (checkupdates), optional `snapper` und `paru`.
 

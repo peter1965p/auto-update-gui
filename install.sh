@@ -1,7 +1,14 @@
 #!/bin/bash
 # Als root ausführen: sudo ./install.sh
 set -e
+[ "$(id -u)" = 0 ] || { echo "Bitte als root ausführen: sudo $0" >&2; exit 1; }
 cd "$(dirname "$0")/files"
+
+# Abhängigkeiten prüfen (nur Hinweis, installiert wird nichts automatisch)
+python3 -c "import PyQt6" 2>/dev/null || echo "Hinweis: python-pyqt6 fehlt  ->  sudo pacman -S python-pyqt6" >&2
+for c in git curl checkupdates; do
+    command -v "$c" >/dev/null || echo "Hinweis: '$c' fehlt (git/curl: Selbst-Update, checkupdates: pacman-contrib)" >&2
+done
 install -Dm755 auto-update-run auto-update-apply auto-update-self auto-update-gui -t /usr/local/bin/
 install -Dm644 auto-update.service auto-update.timer -t /etc/systemd/system/
 install -Dm644 auto-update-gui.desktop -t /usr/share/applications/

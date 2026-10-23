@@ -1,18 +1,40 @@
 #!/usr/bin/env python3
 import json, os, re, shutil, subprocess, sys
-from PyQt6.QtCore import (QEasingCurve, QDateTime, QLocale, QPointF, QProcess, QRectF, Qt, QTime, QTimer,
-    QVariantAnimation)
+from PyQt6.QtCore import (QEasingCurve, QDateTime, QLocale, QPointF, QProcess, QRectF, QSettings, Qt, QTime,
+    QTimer, QVariantAnimation)
 from PyQt6.QtGui import QAction, QColor, QFont, QIcon, QPainter, QPalette, QPen, QPixmap
 from PyQt6.QtWidgets import (QAbstractButton, QApplication, QCheckBox, QComboBox, QDialog, QFrame, QGridLayout,
     QHBoxLayout, QLabel, QMenu, QMessageBox, QPlainTextEdit, QProgressBar, QPushButton, QScrollArea,
     QSizePolicy, QSystemTrayIcon, QTimeEdit, QVBoxLayout, QWidget)
 
-VERSION = "1.0.1"
+VERSION = "1.1.0"
 REPO = "peter1965p/auto-update-gui"
 CONF = "/etc/auto-update.conf"
 DAYS = [("Montag","Mon"),("Dienstag","Tue"),("Mittwoch","Wed"),("Donnerstag","Thu"),
         ("Freitag","Fri"),("Samstag","Sat"),("Sonntag","Sun")]
 MODES = [("Täglich","daily"),("Wöchentlich","weekly"),("5 Min. nach dem Start","boot")]
+THEMES = [("Wie das System", "system"), ("Hell", "light"), ("Dunkel", "dark")]
+ACCENTS = [("Wie das System", "system"), ("Blau", "#3daee9"), ("Grün", "#2ecc71"), ("Violett", "#9b59b6"),
+           ("Orange", "#f5a623"), ("Rot", "#e5534b"), ("Rosa", "#e84393")]
+INTERVALS = [("Jede Stunde", 1), ("Alle 3 Stunden", 3), ("Alle 6 Stunden", 6), ("Alle 12 Stunden", 12), ("Täglich", 24)]
+AUTOSTART = os.path.expanduser("~/.config/autostart/auto-update-gui.desktop")
+cfg = QSettings("auto-update-gui", "auto-update-gui")   # ~/.config/auto-update-gui/auto-update-gui.conf
+
+def flag(key, default=True):
+    return str(cfg.value(key, default)).lower() in ("true", "1")
+
+def autostart_enabled():
+    try:
+        return "Hidden=true" not in open(AUTOSTART).read()
+    except OSError:
+        return os.path.exists("/etc/xdg/autostart/auto-update-gui.desktop")
+
+def set_autostart(on):
+    os.makedirs(os.path.dirname(AUTOSTART), exist_ok=True)
+    body = ("[Desktop Entry]\nType=Application\nName=Automatische Updates\nIcon=system-software-update\n"
+            + ("Exec=/usr/local/bin/auto-update-gui --tray\n" if on else "Hidden=true\n"))
+    open(AUTOSTART, "w").write(body)
+
 STEP = re.compile(r"\((\d+)/(\d+)\) (\w+)")
 PHASE = re.compile(r"\[auto-update\] Phase: (\w+)")
 RESULTS = {"success": "Erfolgreich", "exit-code": "Fehlgeschlagen", "timeout": "Zeitüberschreitung",
@@ -64,11 +86,13 @@ def fmt_delta(secs):
 
 # ---------------------------------------------------------------- Theme
 
-def palette_for(app):
-    dark = app.palette().color(QPalette.ColorRole.Window).lightness() < 128
-    for a in sys.argv:  # --theme=dark|light erzwingt ein Theme
-        if a.startswith("--theme="): dark = a.endswith("dark")
-    t = dict(dark=dark, accent=app.palette().color(QPalette.ColorRole.Highlight).name(),
+def palette_for(base):
+    mode = str(cfg.value("theme", "system"))
+    for a in sys.argv:  # --theme=dark|light überschreibt die Einstellung (z. B. für Screenshots)
+        if a.startswith("--theme="): mode = a.split("=", 1)[1]
+    dark = base.color(QPalette.ColorRole.Window).lightness() < 128 if mode == "system" else mode == "dark"
+    acc = str(cfg.value("accent", "system"))
+    t = dict(dark=dark, accent=base.color(QPalette.ColorRole.Highlight).name() if acc == "system" else acc,
              ok="#2ecc71", warn="#f5a623", err="#e5534b")
     if dark:
         t.update(bg="#1a1c22", card="#252830", border="#353946", text="#e8eaf0", muted="#98a0b2",
@@ -77,6 +101,24 @@ def palette_for(app):
         t.update(bg="#f2f3f7", card="#ffffff", border="#dde0ea", text="#1c1e26", muted="#6a7082",
                  hover="#eceef5", input="#f7f8fb")
     return t
+
+def apply_theme(app):
+    """Wendet Farbschema + Akzentfarbe auf die ganze Anwendung an (auch Dialoge), live."""
+    global theme
+    theme = t = palette_for(ORIG_PAL)
+    R = QPalette.ColorRole; G = QPalette.ColorGroup
+    pal = QPalette()
+    for role, col in ((R.Window, t["bg"]), (R.WindowText, t["text"]), (R.Base, t["input"]), (R.AlternateBase, t["card"]),
+                      (R.Text, t["text"]), (R.Button, t["card"]), (R.ButtonText, t["text"]), (R.ToolTipBase, t["card"]),
+                      (R.ToolTipText, t["text"]), (R.Highlight, t["accent"]), (R.HighlightedText, "#ffffff"),
+                      (R.PlaceholderText, t["muted"]), (R.Link, t["accent"])):
+        pal.setColor(role, QColor(col))
+    for role in (R.WindowText, R.Text, R.ButtonText): pal.setColor(G.Disabled, role, QColor(t["muted"]))
+    app.setPalette(pal)
+    Toggle.accent = QColor(t["accent"]); Toggle.off = QColor("#5c6272" if t["dark"] else "#b4b9c6")
+    app.setStyleSheet(make_qss(t))
+    for wd in app.allWidgets():
+        if isinstance(wd, Toggle): wd.update()
 
 def make_qss(t):
     return f"""
@@ -224,6 +266,63 @@ class StepRow(QWidget):
         self.state.setText(text); set_state(self.state, state)
         self.setEnabled(state != "off")
 
+class SettingsDialog(QDialog):
+    def __init__(self, win):
+        super().__init__(win)
+        self.win = win
+        self.setObjectName("root"); self.setWindowTitle("Einstellungen"); self.setMinimumWidth(540)
+        lay = QVBoxLayout(self); lay.setContentsMargins(20, 18, 20, 16); lay.setSpacing(14)
+        lay.addWidget(make_label("Einstellungen", "h1"))
+
+        c = Card("Design"); lay.addWidget(c)
+        g = QGridLayout(); g.setHorizontalSpacing(14); g.setVerticalSpacing(10); g.setColumnStretch(1, 1); c.lay.addLayout(g)
+        self.theme_box = QComboBox()
+        for n, v in THEMES: self.theme_box.addItem(n, v)
+        self.theme_box.setCurrentIndex(max(0, self.theme_box.findData(str(cfg.value("theme", "system")))))
+        self.accent_box = QComboBox()
+        for n, v in ACCENTS:
+            pm = QPixmap(16, 16); pm.fill(QColor(ORIG_PAL.color(QPalette.ColorRole.Highlight) if v == "system" else QColor(v)))
+            self.accent_box.addItem(QIcon(pm), n, v)
+        self.accent_box.setCurrentIndex(max(0, self.accent_box.findData(str(cfg.value("accent", "system")))))
+        g.addWidget(make_label("Farbschema", "muted"), 0, 0); g.addWidget(self.theme_box, 0, 1)
+        g.addWidget(make_label("Akzentfarbe", "muted"), 1, 0); g.addWidget(self.accent_box, 1, 1)
+        c.lay.addWidget(make_label("Änderungen werden sofort übernommen.", "desc"))
+        self.theme_box.currentIndexChanged.connect(self.design_changed)
+        self.accent_box.currentIndexChanged.connect(self.design_changed)
+
+        c = Card("Verhalten"); lay.addWidget(c)
+        g = QGridLayout(); g.setHorizontalSpacing(14); g.setColumnStretch(1, 1); c.lay.addLayout(g)
+        self.interval_box = QComboBox()
+        for n, v in INTERVALS: self.interval_box.addItem(n, v)
+        self.interval_box.setCurrentIndex(max(0, self.interval_box.findData(int(cfg.value("interval", 3)))))
+        g.addWidget(make_label("Auf verfügbare Updates prüfen", "muted"), 0, 0); g.addWidget(self.interval_box, 0, 1)
+        self.interval_box.currentIndexChanged.connect(lambda *_: (cfg.setValue("interval", self.interval_box.currentData()), win.apply_cfg()))
+        c.lay.addWidget(separator())
+        for key, default, title, desc in (
+                ("notify", True, "Benachrichtigungen anzeigen", "Hinweis im Systray bei neuen Updates und nach einem Lauf."),
+                ("selfcheck", True, "Nach neuen Tool-Versionen suchen", "Fragt alle 12 Stunden GitHub nach einem neuen Release dieses Tools.")):
+            r = OptionRow(title, desc); r.toggle.setChecked(flag(key, default))
+            r.toggle.toggled.connect(lambda on, k=key: (cfg.setValue(k, on), win.apply_cfg()))
+            c.lay.addWidget(r)
+        r = OptionRow("Beim Anmelden im Systray starten", "Das Tool startet unsichtbar im Systray und prüft im Hintergrund.")
+        r.toggle.setChecked(autostart_enabled()); r.toggle.toggled.connect(set_autostart); c.lay.addWidget(r)
+
+        c = Card("Info"); lay.addWidget(c)
+        c.lay.addWidget(make_label(f"Automatische Updates · Version {VERSION}"))
+        link = make_label(f'<a href="https://github.com/{REPO}" style="color:{theme["accent"]}">github.com/{REPO}</a>')
+        link.setOpenExternalLinks(True); c.lay.addWidget(link)
+        row = QHBoxLayout(); c.lay.addLayout(row)
+        b = QPushButton("Jetzt nach Tool-Update suchen"); b.clicked.connect(lambda: (win.check_self_update(True), win.show_window()))
+        row.addWidget(b); row.addStretch()
+
+        row = QHBoxLayout(); lay.addLayout(row); row.addStretch()
+        b = QPushButton("Fertig"); b.setObjectName("primary"); b.clicked.connect(self.accept); row.addWidget(b)
+        self.setFixedHeight(self.layout().totalHeightForWidth(540) if self.layout().hasHeightForWidth() else self.sizeHint().height())
+
+    def design_changed(self, *_):
+        cfg.setValue("theme", self.theme_box.currentData()); cfg.setValue("accent", self.accent_box.currentData())
+        apply_theme(self.win.app); self.win.update_tray_badge()
+
 # ---------------------------------------------------------------- Hauptfenster
 
 class Win(QWidget):
@@ -239,6 +338,7 @@ class Win(QWidget):
         self.counts = {}
         self.notified = 0
         self.selfproc = None
+        self.manual = False
         self.upd_tag = self.upd_url = ""
         self.notified_ver = ""
         self.setObjectName("root")
@@ -260,6 +360,8 @@ class Win(QWidget):
         self.subtitle = make_label("", "muted"); col.addWidget(self.subtitle)
         head.addLayout(col, 1)
         self.pill = make_label("", "pill"); self.pill.setMinimumWidth(120); self.pill.setAlignment(Qt.AlignmentFlag.AlignCenter); head.addWidget(self.pill, 0, Qt.AlignmentFlag.AlignTop)
+        gear = QPushButton("⚙"); gear.setObjectName("flat"); gear.setToolTip("Einstellungen"); gear.setFixedSize(34, 30)
+        gear.clicked.connect(self.open_settings); head.addWidget(gear, 0, Qt.AlignmentFlag.AlignTop)
         lay.addLayout(head)
 
         # Hinweis auf neue Tool-Version
@@ -349,9 +451,18 @@ class Win(QWidget):
         # Systray
         self.tray = QSystemTrayIcon(QIcon.fromTheme("system-software-update"), self)
         menu = QMenu()
-        for text, fn in (("Öffnen", self.show_window), ("Auf Updates prüfen", lambda: self.check_updates(True)),
-                         ("Jetzt aktualisieren", self.run_now), ("Verlassen", self.quit)):
-            a = QAction(text, menu); a.triggered.connect(fn); menu.addAction(a)
+        def add(text, fn):
+            a = QAction(text, menu); a.triggered.connect(fn); menu.addAction(a); return a
+        add("Öffnen", self.show_window)
+        menu.addSeparator()
+        add("Auf Systemupdates prüfen", lambda: self.check_updates(True))
+        add("Jetzt aktualisieren", self.run_now)
+        menu.addSeparator()
+        add("Nach Tool-Update suchen", lambda: self.check_self_update(True))
+        self.act_upd = add("", self.self_update); self.act_upd.setVisible(False)   # nur bei neuer Version
+        add("Einstellungen", self.open_settings)
+        menu.addSeparator()
+        add("Verlassen", self.quit)
         self.tray.setContextMenu(menu)
         self.tray.activated.connect(lambda r: self.show_window() if r == QSystemTrayIcon.ActivationReason.Trigger else None)
         self.tray.setToolTip("Automatische Updates")
@@ -366,13 +477,25 @@ class Win(QWidget):
             t.toggled.connect(self.changed)
         self.load()
         self.timer = QTimer(self); self.timer.timeout.connect(self.poll); self.timer.start(2000)
-        self.checker = QTimer(self); self.checker.timeout.connect(lambda: self.check_updates(True)); self.checker.start(3 * 3600 * 1000)
+        self.checker = QTimer(self); self.checker.timeout.connect(lambda: self.check_updates(True)); self.checker.start(int(cfg.value("interval", 3)) * 3600 * 1000)
         QTimer.singleShot(8000, lambda: self.check_updates(True))
         self.vchecker = QTimer(self); self.vchecker.timeout.connect(self.check_self_update); self.vchecker.start(12 * 3600 * 1000)
         QTimer.singleShot(20000, self.check_self_update)
+        self.apply_cfg()
         self.poll()
 
     # ---- Fenster
+    def notify(self, title, text, icon=QSystemTrayIcon.MessageIcon.Information):
+        if flag("notify"): self.tray.showMessage(title, text, icon)
+
+    def apply_cfg(self):
+        self.checker.start(int(cfg.value("interval", 3)) * 3600 * 1000)
+        if flag("selfcheck"): self.vchecker.start(12 * 3600 * 1000)
+        else: self.vchecker.stop()
+
+    def open_settings(self):
+        SettingsDialog(self).exec()
+
     def show_window(self):
         self.show(); self.raise_(); self.activateWindow()
 
@@ -532,7 +655,7 @@ class Win(QWidget):
             self.load_last(); self.refresh_status()
             ok = self.last[1] == "success"
             self.refresh_header(False)
-            self.tray.showMessage("Automatische Updates", "Update abgeschlossen." if ok else f"Update fehlgeschlagen ({self.last[1]}).",
+            self.notify("Automatische Updates", "Update abgeschlossen." if ok else f"Update fehlgeschlagen ({self.last[1]}).",
                                   QSystemTrayIcon.MessageIcon.Information if ok else QSystemTrayIcon.MessageIcon.Warning)
             QTimer.singleShot(5000, lambda: self.check_updates(True))
             if self.liveview.isVisible() and self.last[0]: self.liveview.setPlainText("\n".join(self.last[0].splitlines()[-80:]))
@@ -614,15 +737,16 @@ class Win(QWidget):
             parts = [f"{self.counts.get('repo', 0)} System", f"{self.counts.get('aur', 0)} AUR"]
             self.tray.setToolTip(f"{n} Updates verfügbar ({', '.join(parts)})")
             if n != self.notified and not self.was_active:
-                self.tray.showMessage("Updates verfügbar", f"{n} Updates warten ({', '.join(parts)}). Klick zum Öffnen.",
+                self.notify("Updates verfügbar", f"{n} Updates warten ({', '.join(parts)}). Klick zum Öffnen.",
                                       QSystemTrayIcon.MessageIcon.Information)
         else:
             self.tray.setIcon(base); self.tray.setToolTip("Automatische Updates – alles aktuell")
         self.notified = n
 
     # ---- Selbst-Update des Tools (GitHub-Releases)
-    def check_self_update(self):
-        if self.selfproc: return
+    def check_self_update(self, force=False):
+        if self.selfproc or not (force is True or flag("selfcheck")): return
+        self.manual = force is True
         p = self.selfproc = QProcess(self)
         p.finished.connect(lambda code, _s: self.self_check_done(code, bytes(p.readAllStandardOutput()).decode()))
         p.start("curl", ["-fsS", "-m", "15", "-H", "Accept: application/vnd.github+json",
@@ -635,21 +759,26 @@ class Win(QWidget):
         except ValueError:
             d = {}
         tag = d.get("tag_name", "")
+        manual, self.manual = self.manual, False
         if not tag:
-            self.st_ver.setText(f"{VERSION} (Update-Prüfung nicht möglich)"); return
+            self.st_ver.setText(f"{VERSION} (Update-Prüfung nicht möglich)")
+            if manual: self.tray.showMessage("Tool-Update", "Prüfung nicht möglich (keine Verbindung zu GitHub?).", QSystemTrayIcon.MessageIcon.Warning)
+            return
         if vtuple(tag) > vtuple(VERSION):
             self.upd_tag, self.upd_url = tag, d.get("html_url", f"https://github.com/{REPO}/releases")
             self.upd_title.setText(f"🎉 Neue Version {tag} verfügbar (installiert: {VERSION})")
             notes = (d.get("body") or "").strip()
             self.upd_notes.setText(notes[:400] + ("…" if len(notes) > 400 else "") or "Keine Versionshinweise.")
             self.upd_card.show()
+            self.act_upd.setText(f"⬆ Tool auf {tag} aktualisieren"); self.act_upd.setVisible(True)
             self.st_ver.setText(f"{VERSION} → {tag} verfügbar")
             if self.notified_ver != tag:
                 self.notified_ver = tag
-                self.tray.showMessage("Neue Version von Automatische Updates", f"{tag} ist verfügbar. Klick zum Öffnen.",
+                self.notify("Neue Version von Automatische Updates", f"{tag} ist verfügbar. Klick zum Öffnen.",
                                       QSystemTrayIcon.MessageIcon.Information)
         else:
-            self.upd_card.hide(); self.st_ver.setText(f"{VERSION} (aktuell)")
+            self.upd_card.hide(); self.act_upd.setVisible(False); self.st_ver.setText(f"{VERSION} (aktuell)")
+            if manual: self.tray.showMessage("Tool-Update", f"Du nutzt die aktuelle Version {VERSION}.", QSystemTrayIcon.MessageIcon.Information)
 
     def self_update(self):
         if self.selfproc or not self.upd_tag: return
@@ -688,9 +817,9 @@ class Win(QWidget):
 app = QApplication(sys.argv)
 app.setStyle("Fusion")
 app.setQuitOnLastWindowClosed(False)
-theme = palette_for(app)
-Toggle.accent = QColor(theme["accent"]); Toggle.off = QColor("#5c6272" if theme["dark"] else "#b4b9c6")
-app.setStyleSheet(make_qss(theme))
+ORIG_PAL = QPalette(app.palette())
+theme = {}
+apply_theme(app)
 w = Win(app)
 if "--no-show" not in sys.argv and "--tray" not in sys.argv: w.show()
 if __name__ == "__main__" and "--grab" not in sys.argv:
