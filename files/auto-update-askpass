@@ -1,3 +1,0 @@
-#!/bin/sh
-# SUDO_ASKPASS-Helfer für die AUR-Updates: liefert das lokal gespeicherte Passwort
-exec cat /etc/auto-update.cred

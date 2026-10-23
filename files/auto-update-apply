@@ -1,6 +1,5 @@
 #!/bin/bash
 # Aufruf (root, via pkexec): auto-update-apply ENABLED MODE DAY TIME SNAPSHOT AUR
-# Bei AUR=1 wird das sudo-Passwort des Benutzers über stdin gelesen (lokal in /etc/auto-update.cred, Modus 600).
 set -eu
 [ $# -eq 6 ] || { echo "Falsche Argumente" >&2; exit 2; }
 EN=$1 MODE=$2 DAY=$3 TIME=$4 SNAP=$5 AUR=$6
@@ -11,22 +10,16 @@ EN=$1 MODE=$2 DAY=$3 TIME=$4 SNAP=$5 AUR=$6
 
 AUR_USER=""
 SUDOERS=/etc/sudoers.d/auto-update-aur
-CRED=/etc/auto-update.cred
-rm -f "$SUDOERS"   # alter NOPASSWD-Eintrag früherer Versionen
 if [ "$AUR" = 1 ]; then
     [ -n "${PKEXEC_UID:-}" ] || { echo "Benutzer nicht ermittelbar (pkexec nötig)" >&2; exit 2; }
     AUR_USER=$(id -nu "$PKEXEC_UID")
     [[ $AUR_USER =~ ^[a-z_][a-z0-9_-]*$ ]] || exit 2
-    # Passwort kommt über stdin (nie über Argumente); leer = vorhandenes behalten
-    IFS= read -r PW || true
-    if [ -n "$PW" ]; then
-        (umask 077; printf '%s\n' "$PW" > "$CRED")
-    elif [ ! -s "$CRED" ]; then
-        echo "Kein Passwort für die AUR-Updates hinterlegt" >&2; exit 2
-    fi
-    chown "$AUR_USER": "$CRED"; chmod 600 "$CRED"
+    TMP=$(mktemp)
+    echo "$AUR_USER ALL=(root) NOPASSWD: /usr/bin/pacman" > "$TMP"
+    visudo -cf "$TMP" >/dev/null
+    install -m 440 -o root -g root "$TMP" "$SUDOERS"; rm -f "$TMP"
 else
-    rm -f "$CRED"
+    rm -f "$SUDOERS"
 fi
 
 cat > /etc/auto-update.conf <<CONF

@@ -21,7 +21,7 @@ rc=$?
 if [ "$AUR" = 1 ] && [ -n "$AUR_USER" ]; then
     phase aur
     echo "== AUR-Update (als $AUR_USER) =="
-    runuser -l "$AUR_USER" -c 'SUDO_ASKPASS=/usr/local/bin/auto-update-askpass paru -Sua --noconfirm --skipreview --sudoflags=-A' || rc=1
+    runuser -l "$AUR_USER" -c 'paru -Sua --noconfirm --skipreview' || rc=1
 fi
 phase done
 exit $rc

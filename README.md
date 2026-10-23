@@ -13,8 +13,7 @@ Man sieht jederzeit, **was** das Tool gerade tut – und es ersetzt das Cachy-Up
 
 - **Zeitplan** per systemd-Timer: täglich, wöchentlich oder 5 Min. nach dem Start
 - **Btrfs-Snapshot** mit Snapper vor jedem Update (optional)
-- **AUR-Updates** über paru (optional): Die GUI fragt dein Passwort ab, prüft es per `sudo` und speichert es nur lokal
-  (`/etc/auto-update.cred`, Modus 600) – kein passwortloses `sudo pacman` mehr
+- **AUR-Updates** über paru (optional, mit Sicherheitshinweis)
 - **Ablaufanzeige** Snapshot → pacman → AUR mit Live-Status, Fortschrittsbalken und Live-Log
 - **Systray** mit Update-Zähler als Badge und Benachrichtigung; Check alle 3 Stunden
 - Animierte Switches, Karten-Layout, passt sich dem hellen/dunklen Theme an
@@ -42,8 +41,7 @@ systemctl --user enable --now arch-update.timer
 |---|---|
 | `files/auto-update-gui` | Qt6-Oberfläche + Systray |
 | `files/auto-update-run` | vom systemd-Service ausgeführt: Snapshot, `pacman -Syu`, AUR |
-| `files/auto-update-apply` | schreibt Konfiguration, Timer und Passwort-Datei (via `pkexec`, Passwort über stdin) |
-| `files/auto-update-askpass` | `SUDO_ASKPASS`-Helfer für paru |
+| `files/auto-update-apply` | schreibt Konfiguration und Timer (via `pkexec`) |
 | `files/auto-update.{service,timer}` | systemd-Units |
 
 Optionen der GUI: `--tray` (ohne Fenster starten), `--theme=dark|light`.
