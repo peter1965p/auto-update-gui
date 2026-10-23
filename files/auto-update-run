@@ -1,0 +1,27 @@
+#!/bin/bash
+# Wird vom systemd-Service aufgerufen: optional Snapshot, pacman -Syu, optional AUR
+# Die "[auto-update] Phase: ..."-Zeilen wertet die GUI für die Ablaufanzeige aus.
+set -u
+[ -r /etc/auto-update.conf ] && . /etc/auto-update.conf
+SNAPSHOT=${SNAPSHOT:-1}
+AUR=${AUR:-0}
+AUR_USER=${AUR_USER:-}
+
+phase() { echo "[auto-update] Phase: $1"; }
+
+if [ "$SNAPSHOT" = 1 ] && snapper list-configs 2>/dev/null | grep -qw root; then
+    phase snapshot
+    snapper -c root create -c number -d "vor Auto-Update" || echo "Snapshot fehlgeschlagen, fahre trotzdem fort"
+fi
+
+phase pacman
+/usr/bin/pacman -Syu --noconfirm
+rc=$?
+
+if [ "$AUR" = 1 ] && [ -n "$AUR_USER" ]; then
+    phase aur
+    echo "== AUR-Update (als $AUR_USER) =="
+    runuser -l "$AUR_USER" -c 'paru -Sua --noconfirm --skipreview' || rc=1
+fi
+phase done
+exit $rc

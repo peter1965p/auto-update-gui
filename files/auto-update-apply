@@ -1,0 +1,50 @@
+#!/bin/bash
+# Aufruf (root, via pkexec): auto-update-apply ENABLED MODE DAY TIME SNAPSHOT AUR
+set -eu
+[ $# -eq 6 ] || { echo "Falsche Argumente" >&2; exit 2; }
+EN=$1 MODE=$2 DAY=$3 TIME=$4 SNAP=$5 AUR=$6
+[[ $EN =~ ^[01]$ && $SNAP =~ ^[01]$ && $AUR =~ ^[01]$ ]] || exit 2
+[[ $MODE =~ ^(daily|weekly|boot)$ ]] || exit 2
+[[ $DAY =~ ^(Mon|Tue|Wed|Thu|Fri|Sat|Sun)$ ]] || exit 2
+[[ $TIME =~ ^([01][0-9]|2[0-3]):[0-5][0-9]$ ]] || exit 2
+
+AUR_USER=""
+SUDOERS=/etc/sudoers.d/auto-update-aur
+if [ "$AUR" = 1 ]; then
+    [ -n "${PKEXEC_UID:-}" ] || { echo "Benutzer nicht ermittelbar (pkexec nötig)" >&2; exit 2; }
+    AUR_USER=$(id -nu "$PKEXEC_UID")
+    [[ $AUR_USER =~ ^[a-z_][a-z0-9_-]*$ ]] || exit 2
+    TMP=$(mktemp)
+    echo "$AUR_USER ALL=(root) NOPASSWD: /usr/bin/pacman" > "$TMP"
+    visudo -cf "$TMP" >/dev/null
+    install -m 440 -o root -g root "$TMP" "$SUDOERS"; rm -f "$TMP"
+else
+    rm -f "$SUDOERS"
+fi
+
+cat > /etc/auto-update.conf <<CONF
+ENABLED=$EN
+MODE=$MODE
+DAY=$DAY
+TIME=$TIME
+SNAPSHOT=$SNAP
+AUR=$AUR
+AUR_USER=$AUR_USER
+CONF
+
+mkdir -p /etc/systemd/system/auto-update.timer.d
+case $MODE in
+  daily)  CAL="*-*-* $TIME:00" ;;
+  weekly) CAL="$DAY *-*-* $TIME:00" ;;
+  boot)   CAL="" ;;
+esac
+{
+  echo "[Timer]"
+  echo "OnCalendar="
+  echo "OnBootSec="
+  if [ "$MODE" = boot ]; then echo "OnBootSec=5min"; else echo "OnCalendar=$CAL"; fi
+} > /etc/systemd/system/auto-update.timer.d/schedule.conf
+
+systemctl daemon-reload
+if [ "$EN" = 1 ]; then systemctl enable auto-update.timer && systemctl restart auto-update.timer
+else systemctl disable --now auto-update.timer; fi

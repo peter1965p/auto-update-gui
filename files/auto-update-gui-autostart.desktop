@@ -1,0 +1,8 @@
+[Desktop Entry]
+Type=Application
+Name=Automatische Updates
+Comment=Update-Überwachung im Systray
+Exec=/usr/local/bin/auto-update-gui --tray
+Icon=system-software-update
+X-KDE-autostart-after=panel
+X-GNOME-Autostart-enabled=true

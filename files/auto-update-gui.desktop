@@ -1,0 +1,10 @@
+[Desktop Entry]
+Type=Application
+Name=Automatische Updates
+GenericName=Update-Automatik
+Comment=Zeitplan, Snapshots und Ablauf automatischer Systemupdates
+Exec=/usr/local/bin/auto-update-gui
+Icon=system-software-update
+Categories=System;Settings;PackageManager;
+Keywords=update;upgrade;pacman;aur;snapper;aktualisieren;
+StartupWMClass=auto-update-gui

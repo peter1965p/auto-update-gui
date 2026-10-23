@@ -1,0 +1,616 @@
+#!/usr/bin/env python3
+import re, shutil, subprocess, sys
+from PyQt6.QtCore import (QEasingCurve, QDateTime, QLocale, QPointF, QProcess, QRectF, Qt, QTime, QTimer,
+    QVariantAnimation)
+from PyQt6.QtGui import QAction, QColor, QFont, QIcon, QPainter, QPalette, QPen, QPixmap
+from PyQt6.QtWidgets import (QAbstractButton, QApplication, QCheckBox, QComboBox, QDialog, QFrame, QGridLayout,
+    QHBoxLayout, QLabel, QMenu, QMessageBox, QPlainTextEdit, QProgressBar, QPushButton, QScrollArea,
+    QSizePolicy, QSystemTrayIcon, QTimeEdit, QVBoxLayout, QWidget)
+
+CONF = "/etc/auto-update.conf"
+DAYS = [("Montag","Mon"),("Dienstag","Tue"),("Mittwoch","Wed"),("Donnerstag","Thu"),
+        ("Freitag","Fri"),("Samstag","Sat"),("Sonntag","Sun")]
+MODES = [("Täglich","daily"),("Wöchentlich","weekly"),("5 Min. nach dem Start","boot")]
+STEP = re.compile(r"\((\d+)/(\d+)\) (\w+)")
+PHASE = re.compile(r"\[auto-update\] Phase: (\w+)")
+RESULTS = {"success": "Erfolgreich", "exit-code": "Fehlgeschlagen", "timeout": "Zeitüberschreitung",
+           "signal": "Abgebrochen", "core-dump": "Abgestürzt"}
+
+# (Schlüssel, Titel, Beschreibung)
+STEPS = [
+    ("snapshot", "Snapshot anlegen",
+     "Btrfs-Snapshot der Root-Partition mit Snapper – zum Zurückrollen, falls ein Update Probleme macht."),
+    ("pacman", "System aktualisieren",
+     "pacman -Syu: Paketdatenbank synchronisieren, offizielle Pakete laden und installieren."),
+    ("aur", "AUR-Pakete aktualisieren",
+     "paru -Sua: AUR-Pakete bauen und installieren (ohne PKGBUILD-Prüfung)."),
+]
+
+def sh(*cmd):
+    return subprocess.run(cmd, capture_output=True, text=True)
+
+def load_conf():
+    c = {"ENABLED":"0","MODE":"daily","DAY":"Mon","TIME":"04:00","SNAPSHOT":"1"}
+    try:
+        for line in open(CONF):
+            if "=" in line:
+                k, v = line.strip().split("=", 1); c[k] = v
+    except OSError:
+        pass
+    return c
+
+def parse_ts(s):
+    """'Sat 2026-10-24 05:00:00 CEST' -> QDateTime oder None"""
+    m = re.search(r"(\d{4}-\d\d-\d\d) (\d\d:\d\d:\d\d)", s or "")
+    if not m or m.group(1) == "0000-00-00": return None
+    dt = QDateTime.fromString(f"{m.group(1)} {m.group(2)}", "yyyy-MM-dd HH:mm:ss")
+    return dt if dt.isValid() else None
+
+def fmt_dt(dt):
+    return f"{QLocale().dayName(dt.date().dayOfWeek(), QLocale.FormatType.ShortFormat)}, " \
+           f"{dt.toString('dd.MM.yyyy')} um {dt.toString('HH:mm')} Uhr"
+
+def fmt_delta(secs):
+    if secs < 0: return ""
+    d, r = divmod(secs, 86400); h, r = divmod(r, 3600); m = r // 60
+    if d: return f"in {d} Tg. {h} Std."
+    if h: return f"in {h} Std. {m} Min."
+    return f"in {max(m, 1)} Min."
+
+# ---------------------------------------------------------------- Theme
+
+def palette_for(app):
+    dark = app.palette().color(QPalette.ColorRole.Window).lightness() < 128
+    t = dict(dark=dark, accent=app.palette().color(QPalette.ColorRole.Highlight).name(),
+             ok="#2ecc71", warn="#f5a623", err="#e5534b")
+    if dark:
+        t.update(bg="#1a1c22", card="#252830", border="#353946", text="#e8eaf0", muted="#98a0b2",
+                 hover="#2f3340", input="#1f2229")
+    else:
+        t.update(bg="#f2f3f7", card="#ffffff", border="#dde0ea", text="#1c1e26", muted="#6a7082",
+                 hover="#eceef5", input="#f7f8fb")
+    return t
+
+def make_qss(t):
+    return f"""
+    QWidget#root, QScrollArea, QScrollArea > QWidget > QWidget {{ background: {t['bg']}; }}
+    QWidget {{ color: {t['text']}; font-size: 13px; }}
+    QFrame#card {{ background: {t['card']}; border: 1px solid {t['border']}; border-radius: 14px; }}
+    QFrame#card QLabel {{ background: transparent; }}
+    QFrame#sep {{ background: {t['border']}; max-height: 1px; border: none; }}
+    QLabel {{ background: transparent; }}
+    QLabel#h1 {{ font-size: 21px; font-weight: 700; }}
+    QLabel#cardTitle {{ font-size: 14px; font-weight: 700; }}
+    QLabel#rowTitle {{ font-weight: 600; }}
+    QLabel#muted, QLabel#desc {{ color: {t['muted']}; }}
+    QLabel#desc {{ font-size: 12px; }}
+    QLabel#mono {{ font-family: monospace; font-size: 12px; color: {t['muted']}; }}
+    QLabel#pill {{ border-radius: 11px; padding: 4px 14px; font-weight: 600; font-size: 12px;
+                  background: {t['hover']}; color: {t['muted']}; }}
+    QLabel#pill[state="on"]  {{ background: rgba(46,204,113,.18); color: {t['ok']}; }}
+    QLabel#pill[state="run"] {{ background: {t['accent']}; color: white; }}
+    QLabel#pill[state="err"] {{ background: rgba(229,83,75,.18); color: {t['err']}; }}
+    QLabel#badge {{ border-radius: 17px; font-weight: 700; font-size: 14px;
+                   background: {t['hover']}; color: {t['muted']}; border: 1px solid {t['border']}; }}
+    QLabel#badge[state="active"] {{ background: {t['accent']}; color: white; border: none; }}
+    QLabel#badge[state="done"]   {{ background: {t['ok']}; color: white; border: none; }}
+    QLabel#badge[state="failed"] {{ background: {t['err']}; color: white; border: none; }}
+    QLabel#stState {{ font-size: 12px; font-weight: 600; color: {t['muted']}; }}
+    QLabel#stState[state="active"] {{ color: {t['accent']}; }}
+    QLabel#stState[state="done"]   {{ color: {t['ok']}; }}
+    QLabel#stState[state="failed"] {{ color: {t['err']}; }}
+    QPushButton {{ padding: 8px 16px; border-radius: 9px; border: 1px solid {t['border']}; background: {t['card']}; }}
+    QPushButton:hover {{ background: {t['hover']}; }}
+    QPushButton:disabled {{ color: {t['muted']}; background: {t['bg']}; }}
+    QPushButton#primary {{ background: {t['accent']}; color: white; border: none; font-weight: 600; }}
+    QPushButton#primary:hover {{ background: {t['accent']}; }}
+    QPushButton#primary:disabled {{ background: {t['border']}; color: {t['muted']}; }}
+    QPushButton#flat {{ border: none; background: transparent; color: {t['muted']}; padding: 6px 10px; }}
+    QPushButton#flat:hover {{ color: {t['text']}; background: {t['hover']}; }}
+    QComboBox, QTimeEdit {{ background: {t['input']}; border: 1px solid {t['border']}; border-radius: 8px;
+                           padding: 4px 10px; min-height: 22px; }}
+    QComboBox:disabled, QTimeEdit:disabled {{ color: {t['muted']}; }}
+    QTimeEdit::up-button, QTimeEdit::down-button {{ width: 0px; border: none; }}
+    QComboBox::drop-down {{ border: none; width: 22px; }}
+    QComboBox QAbstractItemView {{ background: {t['card']}; border: 1px solid {t['border']};
+                                   selection-background-color: {t['accent']}; selection-color: white; outline: none; }}
+    QProgressBar {{ background: {t['border']}; border: none; border-radius: 4px; max-height: 8px; min-height: 8px; }}
+    QProgressBar::chunk {{ background: {t['accent']}; border-radius: 4px; }}
+    QPlainTextEdit {{ background: {t['input']}; border: 1px solid {t['border']}; border-radius: 8px;
+                     font-family: monospace; font-size: 12px; padding: 6px; }}
+    QScrollArea {{ border: none; }}
+    QToolTip {{ background: {t['card']}; color: {t['text']}; border: 1px solid {t['border']}; padding: 6px; }}
+    """
+
+class Toggle(QAbstractButton):
+    accent, off = QColor("#3daee9"), QColor("#7a8090")
+
+    def __init__(self):
+        super().__init__()
+        self.setCheckable(True); self.setFixedSize(46, 26)
+        self.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.pos_ = 0.0
+        self.anim = QVariantAnimation(self, duration=160, easingCurve=QEasingCurve.Type.InOutCubic)
+        self.anim.valueChanged.connect(self._step)
+        self.toggled.connect(self._start)
+
+    def _step(self, v):
+        self.pos_ = v; self.update()
+
+    def _start(self, on):
+        self.anim.stop(); self.anim.setStartValue(self.pos_); self.anim.setEndValue(1.0 if on else 0.0)
+        if self.isVisible(): self.anim.start()
+        else: self._step(1.0 if on else 0.0)
+
+    def setChecked(self, on):
+        super().setChecked(on); self.pos_ = 1.0 if on else 0.0; self.update()
+
+    def paintEvent(self, _):
+        p = QPainter(self); p.setRenderHint(QPainter.RenderHint.Antialiasing)
+        p.setOpacity(1 if self.isEnabled() else .4); p.setPen(Qt.PenStyle.NoPen)
+        t = self.pos_
+        mix = lambda a, b: int(a + (b - a) * t)
+        p.setBrush(QColor(mix(self.off.red(), self.accent.red()), mix(self.off.green(), self.accent.green()),
+                          mix(self.off.blue(), self.accent.blue())))
+        p.drawRoundedRect(QRectF(0, 0, 46, 26), 13, 13)
+        p.setBrush(QColor(0, 0, 0, 40)); p.drawEllipse(QRectF(3 + 20 * t, 3.8, 20, 20))  # Schatten
+        p.setBrush(QColor("white")); p.drawEllipse(QRectF(3 + 20 * t, 3, 20, 20))
+        if t > .5:  # Häkchen im Knopf
+            p.setPen(QPen(self.accent, 2, cap=Qt.PenCapStyle.RoundCap, join=Qt.PenJoinStyle.RoundJoin))
+            x = 3 + 20 * t
+            p.drawPolyline(QPointF(x + 6, 13.5), QPointF(x + 9, 16.5), QPointF(x + 14.5, 10))
+
+def repolish(w):
+    w.style().unpolish(w); w.style().polish(w)
+
+def make_label(text="", name=None, wrap=False):
+    l = QLabel(text)
+    if name: l.setObjectName(name)
+    l.setWordWrap(wrap)
+    return l
+
+def set_state(w, state):
+    w.setProperty("state", state); repolish(w)
+
+class Card(QFrame):
+    def __init__(self, title=None, right=None):
+        super().__init__()
+        self.setObjectName("card")
+        self.lay = QVBoxLayout(self); self.lay.setContentsMargins(18, 16, 18, 16); self.lay.setSpacing(12)
+        if title:
+            head = QHBoxLayout(); head.addWidget(make_label(title, "cardTitle")); head.addStretch()
+            if right: head.addWidget(right)
+            self.lay.addLayout(head)
+
+def separator():
+    s = QFrame(); s.setObjectName("sep"); s.setFixedHeight(1); return s
+
+class OptionRow(QWidget):
+    """Titel + Erklärung links, Schalter rechts."""
+    def __init__(self, title, desc, tooltip=None):
+        super().__init__()
+        lay = QHBoxLayout(self); lay.setContentsMargins(0, 0, 0, 0); lay.setSpacing(14)
+        col = QVBoxLayout(); col.setSpacing(2)
+        col.addWidget(make_label(title, "rowTitle")); col.addWidget(make_label(desc, "desc", True))
+        lay.addLayout(col, 1)
+        self.toggle = Toggle(); lay.addWidget(self.toggle, 0, Qt.AlignmentFlag.AlignVCenter)
+        if tooltip: self.setToolTip(tooltip)
+
+class StepRow(QWidget):
+    def __init__(self, num, title, desc):
+        super().__init__()
+        self.num = str(num)
+        lay = QHBoxLayout(self); lay.setContentsMargins(0, 0, 0, 0); lay.setSpacing(14)
+        self.badge = make_label(self.num, "badge"); self.badge.setFixedSize(34, 34)
+        self.badge.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        lay.addWidget(self.badge, 0, Qt.AlignmentFlag.AlignTop)
+        col = QVBoxLayout(); col.setSpacing(2)
+        col.addWidget(make_label(title, "rowTitle"))
+        self.desc = make_label(desc, "desc", True); col.addWidget(self.desc)
+        lay.addLayout(col, 1)
+        self.state = make_label("", "stState"); self.state.setAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignTop)
+        lay.addWidget(self.state, 0, Qt.AlignmentFlag.AlignTop)
+
+    def set(self, state, text):
+        glyph = {"done": "✓", "failed": "✕", "off": "–", "active": "●"}.get(state, self.num)
+        self.badge.setText(glyph); set_state(self.badge, state)
+        self.state.setText(text); set_state(self.state, state)
+        self.setEnabled(state != "off")
+
+# ---------------------------------------------------------------- Hauptfenster
+
+class Win(QWidget):
+    def __init__(self, app):
+        super().__init__()
+        self.app = app
+        self.was_active = False
+        self.ticks = 0
+        self.conf = load_conf()
+        self.saved = None
+        self.last = None           # (log, result) des letzten Laufs
+        self.procs = {}
+        self.counts = {}
+        self.notified = 0
+        self.setObjectName("root")
+        self.setWindowTitle("Automatische Updates")
+        self.setWindowIcon(QIcon.fromTheme("system-software-update"))
+        self.resize(600, 820); self.setMinimumWidth(520)
+
+        outer = QVBoxLayout(self); outer.setContentsMargins(0, 0, 0, 0); outer.setSpacing(0)
+        scroll = QScrollArea(); scroll.setWidgetResizable(True); scroll.setFrameShape(QFrame.Shape.NoFrame)
+        outer.addWidget(scroll, 1)
+        body = QWidget(); scroll.setWidget(body)
+        lay = QVBoxLayout(body); lay.setContentsMargins(22, 20, 22, 14); lay.setSpacing(14)
+
+        # Kopf
+        head = QHBoxLayout(); head.setSpacing(14)
+        ico = QLabel(); ico.setPixmap(QIcon.fromTheme("system-software-update").pixmap(44, 44)); head.addWidget(ico)
+        col = QVBoxLayout(); col.setSpacing(0)
+        col.addWidget(make_label("Automatische Updates", "h1"))
+        self.subtitle = make_label("", "muted"); col.addWidget(self.subtitle)
+        head.addLayout(col, 1)
+        self.pill = make_label("", "pill"); self.pill.setMinimumWidth(120); self.pill.setAlignment(Qt.AlignmentFlag.AlignCenter); head.addWidget(self.pill, 0, Qt.AlignmentFlag.AlignTop)
+        lay.addLayout(head)
+
+        # Karte: Zeitplan & Optionen
+        c = Card("Einstellungen"); lay.addWidget(c)
+        self.opt_enable = OptionRow("Automatische Updates aktivieren",
+                                    "Das System aktualisiert sich selbstständig im Hintergrund nach dem Zeitplan unten.")
+        c.lay.addWidget(self.opt_enable)
+        c.lay.addWidget(separator())
+        grid = QGridLayout(); grid.setHorizontalSpacing(14); grid.setVerticalSpacing(8)
+        self.mode = QComboBox(); [self.mode.addItem(n, v) for n, v in MODES]
+        self.day = QComboBox(); [self.day.addItem(n, v) for n, v in DAYS]
+        self.time = QTimeEdit(); self.time.setDisplayFormat("HH:mm")
+        self.time.setFixedWidth(100)
+        self.day_l, self.time_l = make_label("Wochentag", "muted"), make_label("Uhrzeit", "muted")
+        grid.addWidget(make_label("Intervall", "muted"), 0, 0); grid.addWidget(self.mode, 0, 1)
+        grid.addWidget(self.day_l, 1, 0); grid.addWidget(self.day, 1, 1)
+        grid.addWidget(self.time_l, 2, 0); grid.addWidget(self.time, 2, 1, Qt.AlignmentFlag.AlignLeft)
+        grid.setColumnStretch(1, 1)
+        c.lay.addLayout(grid)
+        self.summary = make_label("", "desc", True); c.lay.addWidget(self.summary)
+        c.lay.addWidget(separator())
+        self.opt_snap = OptionRow("Vorher Btrfs-Snapshot anlegen",
+                                  "Legt vor jedem Update mit Snapper einen Wiederherstellungspunkt an.")
+        c.lay.addWidget(self.opt_snap)
+        self.opt_aur = OptionRow("AUR-Pakete mitaktualisieren",
+                                 "⚠ Risiko: erlaubt passwortloses 'sudo pacman' und überspringt die PKGBUILD-Prüfung.",
+                                 "Erlaubt deinem Benutzer passwortloses 'sudo pacman' und überspringt die PKGBUILD-Prüfung.\n"
+                                 "Ein kompromittiertes AUR-Paket würde ungeprüft installiert.")
+        c.lay.addWidget(self.opt_aur)
+        self.enable, self.snap, self.aur = self.opt_enable.toggle, self.opt_snap.toggle, self.opt_aur.toggle
+
+        # Karte: Ablauf
+        self.flow_title = make_label("", "muted")
+        c = Card("Ablauf eines Updates", self.flow_title); lay.addWidget(c)
+        self.rows = {}
+        for i, (key, title, desc) in enumerate(STEPS, 1):
+            self.rows[key] = StepRow(i, title, desc); c.lay.addWidget(self.rows[key])
+        self.bar = QProgressBar(); self.bar.setTextVisible(False); self.bar.hide(); c.lay.addWidget(self.bar)
+        self.live = make_label("", "mono", True); self.live.hide(); c.lay.addWidget(self.live)
+        self.logbtn = QPushButton("Live-Ausgabe anzeigen ▾"); self.logbtn.setObjectName("flat")
+        self.logbtn.clicked.connect(self.toggle_live); c.lay.addWidget(self.logbtn, 0, Qt.AlignmentFlag.AlignLeft)
+        self.liveview = QPlainTextEdit(); self.liveview.setReadOnly(True); self.liveview.setFixedHeight(150)
+        self.liveview.hide(); c.lay.addWidget(self.liveview)
+
+        # Karte: Status
+        c = Card("Status"); lay.addWidget(c)
+        sg = QGridLayout(); sg.setHorizontalSpacing(14); sg.setVerticalSpacing(6); c.lay.addLayout(sg)
+        self.st_next, self.st_last = make_label("–", wrap=True), make_label("–", wrap=True)
+        sg.addWidget(make_label("Nächster Lauf", "muted"), 0, 0, Qt.AlignmentFlag.AlignTop); sg.addWidget(self.st_next, 0, 1)
+        sg.addWidget(make_label("Letzter Lauf", "muted"), 1, 0, Qt.AlignmentFlag.AlignTop); sg.addWidget(self.st_last, 1, 1)
+        sg.setColumnStretch(1, 1)
+
+        # Karte: Verfügbare Updates
+        c = Card("Verfügbare Updates"); lay.addWidget(c)
+        self.repolabel = make_label("System (pacman): nicht geprüft", wrap=True)
+        self.aurlabel = make_label("AUR: nicht geprüft", wrap=True)
+        c.lay.addWidget(self.repolabel); c.lay.addWidget(self.aurlabel)
+        arow = QHBoxLayout(); c.lay.addLayout(arow)
+        self.checkbtn = QPushButton("Jetzt prüfen"); self.checkbtn.clicked.connect(self.check_updates); arow.addWidget(self.checkbtn)
+        self.aurbtn = QPushButton("AUR im Terminal installieren"); self.aurbtn.clicked.connect(self.install_aur)
+        self.aurbtn.setEnabled(False); arow.addWidget(self.aurbtn); arow.addStretch()
+        lay.addStretch()
+
+        # Fußleiste
+        foot = QFrame(); foot.setObjectName("root"); outer.addWidget(foot)
+        fl = QHBoxLayout(foot); fl.setContentsMargins(22, 8, 22, 16); fl.setSpacing(8)
+        b = QPushButton("Beenden"); b.setObjectName("flat"); b.clicked.connect(self.quit); fl.addWidget(b)
+        self.feedback = make_label("", "muted"); fl.addWidget(self.feedback, 1)
+        b = QPushButton("Log anzeigen"); b.clicked.connect(self.show_log); fl.addWidget(b)
+        b = QPushButton("Jetzt ausführen"); b.clicked.connect(self.run_now); fl.addWidget(b)
+        self.applybtn = QPushButton("Anwenden"); self.applybtn.setObjectName("primary")
+        self.applybtn.clicked.connect(self.apply); fl.addWidget(self.applybtn)
+
+        # Systray
+        self.tray = QSystemTrayIcon(QIcon.fromTheme("system-software-update"), self)
+        menu = QMenu()
+        for text, fn in (("Öffnen", self.show_window), ("Auf Updates prüfen", lambda: self.check_updates(True)),
+                         ("Jetzt aktualisieren", self.run_now), ("Beenden", self.quit)):
+            a = QAction(text, menu); a.triggered.connect(fn); menu.addAction(a)
+        self.tray.setContextMenu(menu)
+        self.tray.activated.connect(lambda r: self.show_window() if r == QSystemTrayIcon.ActivationReason.Trigger else None)
+        self.tray.setToolTip("Automatische Updates")
+        self.tray.show()
+        self.tray.messageClicked.connect(self.show_window)
+        self._menu = menu
+
+        for w in (self.mode, self.day):
+            w.currentIndexChanged.connect(self.changed)
+        self.time.timeChanged.connect(self.changed)
+        for t in (self.enable, self.snap, self.aur):
+            t.toggled.connect(self.changed)
+        self.load()
+        self.timer = QTimer(self); self.timer.timeout.connect(self.poll); self.timer.start(2000)
+        self.checker = QTimer(self); self.checker.timeout.connect(lambda: self.check_updates(True)); self.checker.start(3 * 3600 * 1000)
+        QTimer.singleShot(8000, lambda: self.check_updates(True))
+        self.poll()
+
+    # ---- Fenster
+    def show_window(self):
+        self.show(); self.raise_(); self.activateWindow()
+
+    def quit(self):
+        self.tray.hide(); self.app.quit()
+
+    def closeEvent(self, e):  # X schließt nur ins Systray
+        if self.tray.isVisible():
+            e.ignore(); self.hide()
+        else:
+            e.accept()
+
+    def toggle_live(self):
+        show = not self.liveview.isVisible()
+        self.liveview.setVisible(show)
+        self.logbtn.setText("Live-Ausgabe verbergen ▴" if show else "Live-Ausgabe anzeigen ▾")
+        if show: self.poll(force=True)
+
+    # ---- Einstellungen
+    def ui_state(self):
+        return (self.enable.isChecked(), self.mode.currentData(), self.day.currentData(),
+                self.time.time().toString("HH:mm"), self.snap.isChecked(), self.aur.isChecked())
+
+    def load(self):
+        c = self.conf = load_conf()
+        for w in (self.mode, self.day, self.time, self.enable, self.snap, self.aur): w.blockSignals(True)
+        self.enable.setChecked(sh("systemctl", "is-enabled", "auto-update.timer").stdout.strip() == "enabled")
+        self.mode.setCurrentIndex(max(0, self.mode.findData(c["MODE"])))
+        self.day.setCurrentIndex(max(0, self.day.findData(c["DAY"])))
+        self.time.setTime(QTime.fromString(c["TIME"], "HH:mm"))
+        self.snap.setChecked(c["SNAPSHOT"] == "1")
+        self.aur.setChecked(c.get("AUR") == "1")
+        for w in (self.mode, self.day, self.time, self.enable, self.snap, self.aur): w.blockSignals(False)
+        self.saved = self.ui_state()
+        self.changed(); self.refresh_status(); self.load_last()
+
+    def changed(self, *_):
+        on = self.enable.isChecked(); m = self.mode.currentData()
+        for w in (self.mode, self.snap, self.aur): w.setEnabled(on)
+        self.day.setEnabled(on and m == "weekly"); self.time.setEnabled(on and m != "boot")
+        self.day_l.setEnabled(self.day.isEnabled()); self.time_l.setEnabled(self.time.isEnabled())
+        t = self.time.time().toString("HH:mm")
+        if not on: s = "Automatische Updates sind ausgeschaltet."
+        elif m == "daily": s = f"Das System wird jeden Tag um {t} Uhr aktualisiert."
+        elif m == "weekly": s = f"Das System wird jeden {self.day.currentText()} um {t} Uhr aktualisiert."
+        else: s = "Das System wird 5 Minuten nach jedem Start aktualisiert."
+        self.summary.setText(s)
+        dirty = self.saved is not None and self.ui_state() != self.saved
+        self.applybtn.setEnabled(dirty)
+        self.feedback.setText("● Ungespeicherte Änderungen" if dirty else self.feedback.text() if self.feedback.property("keep") else "")
+        self.refresh_header()
+        self.render_steps(self.was_active, "")
+
+    # ---- Anzeige
+    def refresh_header(self, running=None):
+        running = self.was_active if running is None else running
+        if running:
+            self.pill.setText("● Update läuft"); set_state(self.pill, "run"); self.subtitle.setText("Das System wird gerade aktualisiert")
+        elif self.saved and self.saved[0]:
+            self.pill.setText("● Aktiv"); set_state(self.pill, "on")
+            self.subtitle.setText(self.schedule_text(self.saved))
+        else:
+            self.pill.setText("Deaktiviert"); set_state(self.pill, "off"); self.subtitle.setText("Keine automatischen Updates geplant")
+
+    def schedule_text(self, s):
+        _, m, d, t, *_ = s
+        if m == "daily": return f"Täglich um {t} Uhr"
+        if m == "weekly": return f"Jeden {dict((v, n) for n, v in DAYS)[d]} um {t} Uhr"
+        return "5 Min. nach dem Systemstart"
+
+    def refresh_status(self):
+        mode = self.conf.get("MODE")
+        nxt = parse_ts(sh("systemctl", "show", "auto-update.timer", "-p", "NextElapseUSecRealtime", "--value").stdout)
+        if self.saved and not self.saved[0]: self.st_next.setText("– (deaktiviert)")
+        elif nxt: self.st_next.setText(f"{fmt_dt(nxt)}  ({fmt_delta(QDateTime.currentDateTime().secsTo(nxt))})")
+        elif mode == "boot": self.st_next.setText("5 Minuten nach dem nächsten Systemstart")
+        else: self.st_next.setText("–")
+        ts = parse_ts(sh("systemctl", "show", "auto-update.service", "-p", "ExecMainExitTimestamp", "--value").stdout)
+        res = sh("systemctl", "show", "auto-update.service", "-p", "Result", "--value").stdout.strip()
+        if ts:
+            ok = res == "success"
+            self.st_last.setText(f"{fmt_dt(ts)}\n{'✓' if ok else '✕'} {RESULTS.get(res, res or '–')}")
+        else:
+            self.st_last.setText("Noch nie ausgeführt")
+
+    def render_steps(self, running, log, result=None):
+        """Zeigt den Ablauf: live (running), letzter Lauf (result) oder Vorschau."""
+        phases = [p for p in PHASE.findall(log) if p != "done"]
+        cur = phases[-1] if phases else None
+        info = {}
+        if running:
+            self.flow_title.setText("Läuft gerade")
+            if cur is None: cur = "snapshot" if self.conf.get("SNAPSHOT") == "1" else "pacman"
+            keys = [k for k, _, _ in STEPS]
+            for k in keys:
+                en = {"snapshot": self.conf.get("SNAPSHOT", "1") == "1", "pacman": True,
+                      "aur": self.conf.get("AUR") == "1"}[k]
+                if not en: info[k] = ("off", "Übersprungen")
+                elif keys.index(k) < keys.index(cur): info[k] = ("done", "Fertig")
+                elif k == cur: info[k] = ("active", "Läuft …")
+                else: info[k] = ("idle", "Wartet")
+            st = STEP.findall(log)
+            if cur == "pacman" and st:
+                n, m, verb = st[-1]; info["pacman"] = ("active", f"{n}/{m} {verb}")
+        elif result is not None and phases:
+            self.flow_title.setText("Letzter Lauf")
+            for k, _, _ in STEPS:
+                if k not in phases: info[k] = ("off", "Nicht ausgeführt")
+                elif result != "success" and k == cur: info[k] = ("failed", "Fehler")
+                else: info[k] = ("done", "Fertig")
+        else:
+            self.flow_title.setText("Geplanter Ablauf")
+            on = self.enable.isChecked()
+            for k, _, _ in STEPS:
+                en = {"snapshot": self.snap.isChecked(), "pacman": True, "aur": self.aur.isChecked()}[k]
+                info[k] = ("idle", "Geplant") if on and en else ("off", "Aus")
+        for k, (s, text) in info.items(): self.rows[k].set(s, text)
+
+    def load_last(self):
+        inv = sh("systemctl", "show", "auto-update.service", "-p", "InvocationID", "--value").stdout.strip()
+        res = sh("systemctl", "show", "auto-update.service", "-p", "Result", "--value").stdout.strip()
+        log = sh("journalctl", f"_SYSTEMD_INVOCATION_ID={inv}", "-o", "cat", "--no-pager").stdout if inv else ""
+        self.last = (log, res)
+        if not self.was_active: self.render_steps(False, log, res)
+
+    def poll(self, force=False):
+        active = sh("systemctl", "is-active", "auto-update.service").stdout.strip() in ("active", "activating")
+        if active:
+            inv = sh("systemctl", "show", "auto-update.service", "-p", "InvocationID", "--value").stdout.strip()
+            log = sh("journalctl", f"_SYSTEMD_INVOCATION_ID={inv}", "-o", "cat", "--no-pager").stdout
+            steps = STEP.findall(log)
+            if not self.was_active: self.conf = load_conf(); self.refresh_header(True)
+            self.render_steps(True, log)
+            self.bar.show(); self.live.show()
+            lines = [l for l in log.splitlines() if l.strip() and not PHASE.search(l)]
+            self.live.setText(lines[-1][:160] if lines else "Starte …")
+            if self.liveview.isVisible():
+                self.liveview.setPlainText("\n".join(log.splitlines()[-80:]))
+                self.liveview.verticalScrollBar().setValue(self.liveview.verticalScrollBar().maximum())
+            phases = PHASE.findall(log)
+            if steps and phases and phases[-1] == "pacman":
+                n, m, verb = steps[-1]; n, m = int(n), int(m)
+                self.bar.setRange(0, m); self.bar.setValue(n)
+                text = f"Update läuft … {verb} {n}/{m}"
+            else:
+                self.bar.setRange(0, 0)  # unbestimmt
+                text = "Update läuft … (Snapshot / Download)" if not steps else "Update läuft …"
+            self.tray.setToolTip(text)
+        elif self.was_active:
+            self.bar.hide(); self.live.hide()
+            self.load_last(); self.refresh_status()
+            ok = self.last[1] == "success"
+            self.refresh_header(False)
+            self.tray.showMessage("Automatische Updates", "Update abgeschlossen." if ok else f"Update fehlgeschlagen ({self.last[1]}).",
+                                  QSystemTrayIcon.MessageIcon.Information if ok else QSystemTrayIcon.MessageIcon.Warning)
+            QTimer.singleShot(5000, lambda: self.check_updates(True))
+            if self.liveview.isVisible() and self.last[0]: self.liveview.setPlainText("\n".join(self.last[0].splitlines()[-80:]))
+        elif force and self.last and self.liveview.isVisible():
+            self.liveview.setPlainText("\n".join(self.last[0].splitlines()[-80:]))
+        self.was_active = active
+        self.ticks += 1
+        if not active and self.ticks % 15 == 0: self.refresh_status()
+
+    def flash(self, text, ms=4000):
+        self.feedback.setProperty("keep", True); self.feedback.setText(text)
+        def clear():
+            self.feedback.setProperty("keep", False); self.changed()
+        QTimer.singleShot(ms, clear)
+
+    # ---- Aktionen
+    def apply(self):
+        aur = self.aur.isChecked() and self.enable.isChecked()
+        args = ["pkexec", "/usr/local/bin/auto-update-apply", "1" if self.enable.isChecked() else "0",
+                self.mode.currentData(), self.day.currentData(), self.time.time().toString("HH:mm"),
+                "1" if self.snap.isChecked() else "0", "1" if aur else "0"]
+        if aur and QMessageBox.warning(
+                self, "AUR automatisch", "Damit darf dein Benutzer ohne Passwort 'sudo pacman' ausführen, und AUR-Pakete "
+                "werden ohne PKGBUILD-Prüfung gebaut.\n\nWirklich aktivieren?",
+                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No) != QMessageBox.StandardButton.Yes:
+            return
+        r = sh(*args)
+        if r.returncode: QMessageBox.warning(self, "Fehler", r.stderr or "Abgebrochen")
+        self.load()
+        if not r.returncode: self.flash("✓ Einstellungen gespeichert")
+
+    def run_now(self):
+        if QMessageBox.question(self, "Update", "Update jetzt im Hintergrund starten?") == QMessageBox.StandardButton.Yes:
+            r = sh("pkexec", "/usr/bin/systemctl", "start", "--no-block", "auto-update.service")
+            if r.returncode: QMessageBox.warning(self, "Fehler", r.stderr or "Abgebrochen")
+            self.poll()
+
+    def check_updates(self, silent=False):
+        if self.procs: return
+        self.checkbtn.setEnabled(False); self.checkbtn.setText("Prüfe …")
+        self.repolabel.setText("System (pacman): prüfe …"); self.aurlabel.setText("AUR: prüfe …")
+        for name, cmd, args in (("repo", "checkupdates", []), ("aur", "paru", ["-Qua"])):
+            if not shutil.which(cmd):
+                self.done_check(name, None, None); continue
+            p = QProcess(self); self.procs[name] = p
+            p.finished.connect(lambda code, _s, n=name: self.done_check(n, code, bytes(self.procs[n].readAllStandardOutput()).decode()))
+            p.start(cmd, args)
+
+    def done_check(self, name, code, out):
+        self.procs.pop(name, None)
+        lines = [l for l in (out or "").splitlines() if l.strip()]
+        label = self.repolabel if name == "repo" else self.aurlabel
+        title = "System (pacman)" if name == "repo" else "AUR"
+        if code is None:
+            label.setText(f"{title}: Werkzeug fehlt ({'pacman-contrib' if name == 'repo' else 'paru'})")
+        elif code not in (0, 1, 2) or (name == "repo" and code == 1):
+            label.setText(f"{title}: Prüfung fehlgeschlagen")
+        elif lines:
+            label.setText(f"{title}: {len(lines)} verfügbar\n" + "\n".join(f"   {l}" for l in lines[:8]) + ("\n   …" if len(lines) > 8 else ""))
+        else:
+            label.setText(f"{title}: ✓ alles aktuell")
+        if code in (0, 2): self.counts[name] = len(lines)
+        else: self.counts.pop(name, None)
+        if name == "aur": self.aurbtn.setEnabled(bool(lines))
+        if not self.procs:
+            self.checkbtn.setEnabled(True); self.checkbtn.setText("Jetzt prüfen")
+            self.update_tray_badge()
+
+    def update_tray_badge(self):
+        n = sum(self.counts.values())
+        base = QIcon.fromTheme("system-software-update")
+        if n:
+            pm = base.pixmap(64, 64)
+            p = QPainter(pm); p.setRenderHint(QPainter.RenderHint.Antialiasing)
+            p.setPen(Qt.PenStyle.NoPen); p.setBrush(QColor(theme["err"])); p.drawEllipse(QRectF(28, 0, 36, 36))
+            p.setPen(QColor("white")); f = QFont(); f.setBold(True); f.setPixelSize(22 if n < 100 else 17); p.setFont(f)
+            p.drawText(QRectF(28, 0, 36, 36), Qt.AlignmentFlag.AlignCenter, str(n)); p.end()
+            self.tray.setIcon(QIcon(pm))
+            parts = [f"{self.counts.get('repo', 0)} System", f"{self.counts.get('aur', 0)} AUR"]
+            self.tray.setToolTip(f"{n} Updates verfügbar ({', '.join(parts)})")
+            if n != self.notified and not self.was_active:
+                self.tray.showMessage("Updates verfügbar", f"{n} Updates warten ({', '.join(parts)}). Klick zum Öffnen.",
+                                      QSystemTrayIcon.MessageIcon.Information)
+        else:
+            self.tray.setIcon(base); self.tray.setToolTip("Automatische Updates – alles aktuell")
+        self.notified = n
+
+    def install_aur(self):
+        for term, flag in (("konsole", "-e"), ("kitty", ""), ("alacritty", "-e")):
+            if shutil.which(term):
+                cmd = [term] + ([flag] if flag else []) + ["bash", "-c", "paru -Sua; echo; read -p 'Fertig, Enter zum Schließen'"]
+                subprocess.Popen(cmd)
+                return
+        QMessageBox.warning(self, "Fehler", "Kein Terminal gefunden.")
+
+    def show_log(self):
+        d = QDialog(self); d.setWindowTitle("Update-Log"); d.resize(760, 480)
+        v = QVBoxLayout(d); t = QPlainTextEdit(); t.setReadOnly(True); v.addWidget(t)
+        t.setPlainText(sh("journalctl", "-u", "auto-update.service", "-n", "200", "--no-pager").stdout or "Keine Einträge.")
+        t.verticalScrollBar().setValue(t.verticalScrollBar().maximum())
+        d.exec()
+
+app = QApplication(sys.argv)
+app.setStyle("Fusion")
+app.setQuitOnLastWindowClosed(False)
+theme = palette_for(app)
+Toggle.accent = QColor(theme["accent"]); Toggle.off = QColor("#5c6272" if theme["dark"] else "#b4b9c6")
+app.setStyleSheet(make_qss(theme))
+w = Win(app)
+if "--no-show" not in sys.argv and "--tray" not in sys.argv: w.show()
+if __name__ == "__main__" and "--grab" not in sys.argv:
+    sys.exit(app.exec())
