@@ -376,7 +376,13 @@ class Win(QWidget):
         self.show(); self.raise_(); self.activateWindow()
 
     def quit(self):
-        self.tray.hide(); self.app.quit()
+        # Tray-Icon sofort entfernen, Timer/Prozesse stoppen, notfalls hart beenden
+        self.tray.setVisible(False)
+        for t in (self.timer, self.checker, self.vchecker): t.stop()
+        for p in list(self.procs.values()) + [self.selfproc, self.aurproc if hasattr(self, "aurproc") else None]:
+            if p: p.kill(); p.waitForFinished(500)
+        self.app.quit()
+        QTimer.singleShot(1500, lambda: os._exit(0))
 
     def closeEvent(self, e):  # X schließt nur ins Systray
         if self.tray.isVisible():
