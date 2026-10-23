@@ -1,0 +1,11 @@
+#!/bin/bash
+# Aufruf (root, via pkexec): auto-update-self TAG
+# Holt den angegebenen Release-Tag von GitHub und installiert ihn mit install.sh.
+set -eu
+REPO=peter1965p/auto-update-gui
+[ $# -eq 1 ] && [[ $1 =~ ^v?[0-9]+(\.[0-9]+){1,3}$ ]] || { echo "Ungültiger Tag" >&2; exit 2; }
+[ -n "${PKEXEC_UID:-}" ] || { echo "Benutzer nicht ermittelbar (pkexec nötig)" >&2; exit 2; }
+command -v git >/dev/null || { echo "git fehlt (sudo pacman -S git)" >&2; exit 2; }
+T=$(mktemp -d); trap 'rm -rf "$T"' EXIT
+GIT_TERMINAL_PROMPT=0 git clone --quiet --depth 1 --branch "$1" "https://github.com/$REPO.git" "$T/src"
+SUDO_USER=$(id -nu "$PKEXEC_UID") bash "$T/src/install.sh"

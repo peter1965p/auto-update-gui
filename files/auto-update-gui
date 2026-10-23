@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-import re, shutil, subprocess, sys
+import json, os, re, shutil, subprocess, sys
 from PyQt6.QtCore import (QEasingCurve, QDateTime, QLocale, QPointF, QProcess, QRectF, Qt, QTime, QTimer,
     QVariantAnimation)
 from PyQt6.QtGui import QAction, QColor, QFont, QIcon, QPainter, QPalette, QPen, QPixmap
@@ -7,6 +7,8 @@ from PyQt6.QtWidgets import (QAbstractButton, QApplication, QCheckBox, QComboBox
     QHBoxLayout, QLabel, QMenu, QMessageBox, QPlainTextEdit, QProgressBar, QPushButton, QScrollArea,
     QSizePolicy, QSystemTrayIcon, QTimeEdit, QVBoxLayout, QWidget)
 
+VERSION = "1.0.0"
+REPO = "peter1965p/auto-update-gui"
 CONF = "/etc/auto-update.conf"
 DAYS = [("Montag","Mon"),("Dienstag","Tue"),("Mittwoch","Wed"),("Donnerstag","Thu"),
         ("Freitag","Fri"),("Samstag","Sat"),("Sonntag","Sun")]
@@ -38,6 +40,9 @@ def load_conf():
     except OSError:
         pass
     return c
+
+def vtuple(v):
+    return tuple(int(x) for x in re.findall(r"\d+", v or ""))
 
 def parse_ts(s):
     """'Sat 2026-10-24 05:00:00 CEST' -> QDateTime oder None"""
@@ -233,6 +238,9 @@ class Win(QWidget):
         self.procs = {}
         self.counts = {}
         self.notified = 0
+        self.selfproc = None
+        self.upd_tag = self.upd_url = ""
+        self.notified_ver = ""
         self.setObjectName("root")
         self.setWindowTitle("Automatische Updates")
         self.setWindowIcon(QIcon.fromTheme("system-software-update"))
@@ -253,6 +261,16 @@ class Win(QWidget):
         head.addLayout(col, 1)
         self.pill = make_label("", "pill"); self.pill.setMinimumWidth(120); self.pill.setAlignment(Qt.AlignmentFlag.AlignCenter); head.addWidget(self.pill, 0, Qt.AlignmentFlag.AlignTop)
         lay.addLayout(head)
+
+        # Hinweis auf neue Tool-Version
+        self.upd_card = Card(); self.upd_card.hide(); lay.addWidget(self.upd_card)
+        self.upd_title = make_label("", "cardTitle"); self.upd_card.lay.addWidget(self.upd_title)
+        self.upd_notes = make_label("", "desc", True); self.upd_card.lay.addWidget(self.upd_notes)
+        urow = QHBoxLayout(); self.upd_card.lay.addLayout(urow)
+        self.upd_btn = QPushButton("Jetzt aktualisieren"); self.upd_btn.setObjectName("primary")
+        self.upd_btn.clicked.connect(self.self_update); urow.addWidget(self.upd_btn)
+        b = QPushButton("Release ansehen"); b.clicked.connect(lambda: subprocess.Popen(["xdg-open", self.upd_url])); urow.addWidget(b)
+        urow.addStretch()
 
         # Karte: Zeitplan & Optionen
         c = Card("Einstellungen"); lay.addWidget(c)
@@ -302,6 +320,8 @@ class Win(QWidget):
         self.st_next, self.st_last = make_label("–", wrap=True), make_label("–", wrap=True)
         sg.addWidget(make_label("Nächster Lauf", "muted"), 0, 0, Qt.AlignmentFlag.AlignTop); sg.addWidget(self.st_next, 0, 1)
         sg.addWidget(make_label("Letzter Lauf", "muted"), 1, 0, Qt.AlignmentFlag.AlignTop); sg.addWidget(self.st_last, 1, 1)
+        self.st_ver = make_label(f"{VERSION}", wrap=True)
+        sg.addWidget(make_label("Tool-Version", "muted"), 2, 0, Qt.AlignmentFlag.AlignTop); sg.addWidget(self.st_ver, 2, 1)
         sg.setColumnStretch(1, 1)
 
         # Karte: Verfügbare Updates
@@ -347,6 +367,8 @@ class Win(QWidget):
         self.timer = QTimer(self); self.timer.timeout.connect(self.poll); self.timer.start(2000)
         self.checker = QTimer(self); self.checker.timeout.connect(lambda: self.check_updates(True)); self.checker.start(3 * 3600 * 1000)
         QTimer.singleShot(8000, lambda: self.check_updates(True))
+        self.vchecker = QTimer(self); self.vchecker.timeout.connect(self.check_self_update); self.vchecker.start(12 * 3600 * 1000)
+        QTimer.singleShot(20000, self.check_self_update)
         self.poll()
 
     # ---- Fenster
@@ -590,6 +612,56 @@ class Win(QWidget):
         else:
             self.tray.setIcon(base); self.tray.setToolTip("Automatische Updates – alles aktuell")
         self.notified = n
+
+    # ---- Selbst-Update des Tools (GitHub-Releases)
+    def check_self_update(self):
+        if self.selfproc: return
+        p = self.selfproc = QProcess(self)
+        p.finished.connect(lambda code, _s: self.self_check_done(code, bytes(p.readAllStandardOutput()).decode()))
+        p.start("curl", ["-fsS", "-m", "15", "-H", "Accept: application/vnd.github+json",
+                         f"https://api.github.com/repos/{REPO}/releases/latest"])
+
+    def self_check_done(self, code, out):
+        self.selfproc = None
+        try:
+            d = json.loads(out) if code == 0 else {}
+        except ValueError:
+            d = {}
+        tag = d.get("tag_name", "")
+        if not tag:
+            self.st_ver.setText(f"{VERSION} (Update-Prüfung nicht möglich)"); return
+        if vtuple(tag) > vtuple(VERSION):
+            self.upd_tag, self.upd_url = tag, d.get("html_url", f"https://github.com/{REPO}/releases")
+            self.upd_title.setText(f"🎉 Neue Version {tag} verfügbar (installiert: {VERSION})")
+            notes = (d.get("body") or "").strip()
+            self.upd_notes.setText(notes[:400] + ("…" if len(notes) > 400 else "") or "Keine Versionshinweise.")
+            self.upd_card.show()
+            self.st_ver.setText(f"{VERSION} → {tag} verfügbar")
+            if self.notified_ver != tag:
+                self.notified_ver = tag
+                self.tray.showMessage("Neue Version von Automatische Updates", f"{tag} ist verfügbar. Klick zum Öffnen.",
+                                      QSystemTrayIcon.MessageIcon.Information)
+        else:
+            self.upd_card.hide(); self.st_ver.setText(f"{VERSION} (aktuell)")
+
+    def self_update(self):
+        if self.selfproc or not self.upd_tag: return
+        if QMessageBox.question(self, "Tool aktualisieren", f"Version {self.upd_tag} von GitHub holen und installieren?\n"
+                                "Das Fenster startet danach neu.") != QMessageBox.StandardButton.Yes:
+            return
+        self.upd_btn.setEnabled(False); self.upd_btn.setText("Installiere …")
+        p = self.selfproc = QProcess(self)
+        p.finished.connect(lambda code, _s: self.self_update_done(code, bytes(p.readAllStandardError()).decode()))
+        p.start("pkexec", ["/usr/local/bin/auto-update-self", self.upd_tag])
+
+    def self_update_done(self, code, err):
+        self.selfproc = None
+        if code:
+            self.upd_btn.setEnabled(True); self.upd_btn.setText("Jetzt aktualisieren")
+            QMessageBox.warning(self, "Update fehlgeschlagen", err.strip() or "Abgebrochen"); return
+        self.tray.hide()
+        args = [sys.executable, "/usr/local/bin/auto-update-gui"] + ([] if self.isVisible() else ["--tray"])
+        os.execv(sys.executable, args)
 
     def install_aur(self):
         for term, flag in (("konsole", "-e"), ("kitty", ""), ("alacritty", "-e")):
