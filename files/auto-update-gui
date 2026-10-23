@@ -338,7 +338,8 @@ class Win(QWidget):
         # Fußleiste
         foot = QFrame(); foot.setObjectName("root"); outer.addWidget(foot)
         fl = QHBoxLayout(foot); fl.setContentsMargins(22, 8, 22, 16); fl.setSpacing(8)
-        b = QPushButton("Beenden"); b.setObjectName("flat"); b.clicked.connect(self.quit); fl.addWidget(b)
+        b = QPushButton("Schließen"); b.setObjectName("flat"); b.setToolTip("Fenster schließen, das Tool läuft im Systray weiter")
+        b.clicked.connect(self.hide); fl.addWidget(b)
         self.feedback = make_label("", "muted"); fl.addWidget(self.feedback, 1)
         b = QPushButton("Log anzeigen"); b.clicked.connect(self.show_log); fl.addWidget(b)
         b = QPushButton("Jetzt ausführen"); b.clicked.connect(self.run_now); fl.addWidget(b)
@@ -349,7 +350,7 @@ class Win(QWidget):
         self.tray = QSystemTrayIcon(QIcon.fromTheme("system-software-update"), self)
         menu = QMenu()
         for text, fn in (("Öffnen", self.show_window), ("Auf Updates prüfen", lambda: self.check_updates(True)),
-                         ("Jetzt aktualisieren", self.run_now), ("Beenden", self.quit)):
+                         ("Jetzt aktualisieren", self.run_now), ("Verlassen", self.quit)):
             a = QAction(text, menu); a.triggered.connect(fn); menu.addAction(a)
         self.tray.setContextMenu(menu)
         self.tray.activated.connect(lambda r: self.show_window() if r == QSystemTrayIcon.ActivationReason.Trigger else None)

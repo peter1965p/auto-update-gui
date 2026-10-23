@@ -21,7 +21,7 @@ Man sieht jederzeit, **was** das Tool gerade tut – und es ersetzt das Cachy-Up
 - Animierte Switches, Karten-Layout, passt sich dem hellen/dunklen Theme an
 - **Selbst-Update:** prüft GitHub-Releases; bei neuer Version erscheint ein Hinweis mit Knopf „Jetzt aktualisieren“
   (Passwortabfrage via `pkexec`, danach Neustart der GUI)
-- Startet beim Login automatisch im Tray (`--tray`)
+- Startet beim Login automatisch im Tray (`--tray`); „Schließen“ minimiert nur ins Systray, komplett beenden über Rechtsklick auf das Tray-Icon → „Verlassen“
 
 ## Installation
 
