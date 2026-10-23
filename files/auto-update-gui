@@ -1,13 +1,14 @@
 #!/usr/bin/env python3
-import re, shutil, subprocess, sys
+import getpass, os, re, shutil, subprocess, sys
 from PyQt6.QtCore import (QEasingCurve, QDateTime, QLocale, QPointF, QProcess, QRectF, Qt, QTime, QTimer,
     QVariantAnimation)
 from PyQt6.QtGui import QAction, QColor, QFont, QIcon, QPainter, QPalette, QPen, QPixmap
 from PyQt6.QtWidgets import (QAbstractButton, QApplication, QCheckBox, QComboBox, QDialog, QFrame, QGridLayout,
-    QHBoxLayout, QLabel, QMenu, QMessageBox, QPlainTextEdit, QProgressBar, QPushButton, QScrollArea,
+    QHBoxLayout, QInputDialog, QLabel, QLineEdit, QMenu, QMessageBox, QPlainTextEdit, QProgressBar, QPushButton, QScrollArea,
     QSizePolicy, QSystemTrayIcon, QTimeEdit, QVBoxLayout, QWidget)
 
 CONF = "/etc/auto-update.conf"
+CRED = "/etc/auto-update.cred"
 DAYS = [("Montag","Mon"),("Dienstag","Tue"),("Mittwoch","Wed"),("Donnerstag","Thu"),
         ("Freitag","Fri"),("Samstag","Sat"),("Sonntag","Sun")]
 MODES = [("Täglich","daily"),("Wöchentlich","weekly"),("5 Min. nach dem Start","boot")]
@@ -26,8 +27,8 @@ STEPS = [
      "paru -Sua: AUR-Pakete bauen und installieren (ohne PKGBUILD-Prüfung)."),
 ]
 
-def sh(*cmd):
-    return subprocess.run(cmd, capture_output=True, text=True)
+def sh(*cmd, input=None):
+    return subprocess.run(cmd, capture_output=True, text=True, input=input)
 
 def load_conf():
     c = {"ENABLED":"0","MODE":"daily","DAY":"Mon","TIME":"04:00","SNAPSHOT":"1"}
@@ -277,9 +278,10 @@ class Win(QWidget):
                                   "Legt vor jedem Update mit Snapper einen Wiederherstellungspunkt an.")
         c.lay.addWidget(self.opt_snap)
         self.opt_aur = OptionRow("AUR-Pakete mitaktualisieren",
-                                 "⚠ Risiko: erlaubt passwortloses 'sudo pacman' und überspringt die PKGBUILD-Prüfung.",
-                                 "Erlaubt deinem Benutzer passwortloses 'sudo pacman' und überspringt die PKGBUILD-Prüfung.\n"
-                                 "Ein kompromittiertes AUR-Paket würde ungeprüft installiert.")
+                                 "⚠ Risiko: Dein sudo-Passwort wird lokal gespeichert, die PKGBUILD-Prüfung entfällt.",
+                                 "Dein Passwort wird nur lokal in /etc/auto-update.cred (Modus 600, nur dein Benutzer) abgelegt\n"
+                                 "und für die AUR-Updates per sudo verwendet. Die PKGBUILD-Prüfung wird übersprungen:\n"
+                                 "ein kompromittiertes AUR-Paket würde ungeprüft installiert.")
         c.lay.addWidget(self.opt_aur)
         self.enable, self.snap, self.aur = self.opt_enable.toggle, self.opt_snap.toggle, self.opt_aur.toggle
 
@@ -520,17 +522,29 @@ class Win(QWidget):
         QTimer.singleShot(ms, clear)
 
     # ---- Aktionen
+    def ask_password(self):
+        """Fragt das sudo-Passwort ab und prüft es; None bei Abbruch."""
+        user = getpass.getuser(); hint = ""
+        while True:
+            pw, ok = QInputDialog.getText(
+                self, "AUR automatisch",
+                f"{hint}Passwort für {user} eingeben.\n\nEs wird nur lokal gespeichert (/etc/auto-update.cred, Modus 600)\n"
+                "und für die AUR-Updates per sudo genutzt. AUR-Pakete werden ohne PKGBUILD-Prüfung gebaut.",
+                QLineEdit.EchoMode.Password)
+            if not ok: return None
+            if pw and sh("sudo", "-S", "-k", "-v", input=pw + "\n").returncode == 0: return pw
+            hint = "❌ Passwort falsch.\n\n"
+
     def apply(self):
         aur = self.aur.isChecked() and self.enable.isChecked()
+        pw = ""
+        if aur and (not os.path.exists(CRED) or not self.saved[5]):
+            pw = self.ask_password()
+            if pw is None: return
         args = ["pkexec", "/usr/local/bin/auto-update-apply", "1" if self.enable.isChecked() else "0",
                 self.mode.currentData(), self.day.currentData(), self.time.time().toString("HH:mm"),
                 "1" if self.snap.isChecked() else "0", "1" if aur else "0"]
-        if aur and QMessageBox.warning(
-                self, "AUR automatisch", "Damit darf dein Benutzer ohne Passwort 'sudo pacman' ausführen, und AUR-Pakete "
-                "werden ohne PKGBUILD-Prüfung gebaut.\n\nWirklich aktivieren?",
-                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No) != QMessageBox.StandardButton.Yes:
-            return
-        r = sh(*args)
+        r = sh(*args, input=pw + "\n" if aur else None)
         if r.returncode: QMessageBox.warning(self, "Fehler", r.stderr or "Abgebrochen")
         self.load()
         if not r.returncode: self.flash("✓ Einstellungen gespeichert")

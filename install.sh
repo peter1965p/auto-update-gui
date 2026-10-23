@@ -2,7 +2,7 @@
 # Als root ausführen: sudo ./install.sh
 set -e
 cd "$(dirname "$0")/files"
-install -Dm755 auto-update-run auto-update-apply auto-update-gui -t /usr/local/bin/
+install -Dm755 auto-update-run auto-update-apply auto-update-askpass auto-update-gui -t /usr/local/bin/
 install -Dm644 auto-update.service auto-update.timer -t /etc/systemd/system/
 install -Dm644 auto-update-gui.desktop -t /usr/share/applications/
 # Autostart im Systray bei jeder Anmeldung (Fenster bleibt dabei zu)
