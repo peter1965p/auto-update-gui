@@ -1,11 +1,14 @@
 #!/usr/bin/env python3
-import json, os, re, shutil, subprocess, sys
+import html, json, math, os, re, shutil, subprocess, sys, time
+from collections import Counter
+from datetime import datetime as DT
+from types import SimpleNamespace
 from PyQt6.QtCore import (QEasingCurve, QDateTime, QLocale, QPointF, QProcess, QRectF, QSettings, Qt, QTime,
     QTimer, QVariantAnimation)
-from PyQt6.QtGui import QAction, QColor, QFont, QIcon, QPainter, QPalette, QPen, QPixmap
+from PyQt6.QtGui import QAction, QColor, QFont, QIcon, QPainter, QPainterPath, QPalette, QPen, QPixmap
 from PyQt6.QtWidgets import (QAbstractButton, QApplication, QCheckBox, QComboBox, QDialog, QFrame, QGridLayout,
     QHBoxLayout, QLabel, QMenu, QMessageBox, QPlainTextEdit, QProgressBar, QPushButton, QScrollArea,
-    QSizePolicy, QSystemTrayIcon, QTimeEdit, QVBoxLayout, QWidget)
+    QSizePolicy, QSystemTrayIcon, QTextEdit, QTimeEdit, QVBoxLayout, QWidget)
 
 VERSION = "1.1.0"
 REPO = "peter1965p/auto-update-gui"
@@ -84,6 +87,157 @@ def fmt_delta(secs):
     if h: return f"in {h} Std. {m} Min."
     return f"in {max(m, 1)} Min."
 
+
+# ---------------------------------------------------------------- Lauf-Protokoll auswerten
+LINE = re.compile(r"^(\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d)\S*\s+\S+\s+[^\s\[:]+(?:\[\d+\])?:\s?(.*)$")
+PHASE_TITLES = {"snapshot": "Snapshot anlegen", "pacman": "System aktualisieren (pacman)", "aur": "AUR-Pakete aktualisieren (paru)"}
+PHASE_TAGS = {"start": "Start", "snapshot": "Snap", "pacman": "pacman", "aur": "AUR"}
+RX_PKG_DE = re.compile(r"^(\S+) wird (aktualisiert|installiert|neu installiert|entfernt|herabgestuft)\b")
+RX_PKG_EN = re.compile(r"^(?:\(\s*\d+/\d+\)\s+)?(upgrading|installing|reinstalling|removing|downgrading) (\S+?)\.*\s*$", re.I)
+EN_VERBS = {"upgrading": "aktualisiert", "installing": "installiert", "reinstalling": "neu installiert",
+            "removing": "entfernt", "downgrading": "herabgestuft"}
+PKG_ICON = {"aktualisiert": "↑", "installiert": "+", "neu installiert": "↻", "entfernt": "−", "herabgestuft": "↓"}
+RX_DL = re.compile(r"^(\S+) wird heruntergeladen|^(?:\(\s*\d+/\d+\)\s+)?downloading (\S+?)\.*\s*$", re.I)
+RX_HOOK = re.compile(r"^\(\s*(\d+)/(\d+)\)\s+(.*)$")
+RX_TOTAL = re.compile(r"^(?:Pakete?|Packages?|Aur|AUR) \((\d+)\)")
+RX_SIZE = re.compile(r"^(?:Gesamtgröße des Downloads|Total Download Size):\s+(.+)$")
+RX_ROW = re.compile(r"^(?:aur|[\w.+-]+)/(\S+)\s+(\S+)\s+(\S+)\s+(?:-?[\d.,]+ [KMG]iB|Nein|Ja|No|Yes)")
+RX_BAD = re.compile(r"^(?:fehler|error)\b|(?:fehlgeschlagen|failed)", re.I)
+RX_WARN = re.compile(r"^(?:warnung|warning)\b", re.I)
+RX_NOTHING = re.compile(r"nichts zu tun|nothing to do", re.I)
+NOISE = ("->", "  ->", "Copied:", "Updated:", "Saved:", "Building initramfs", "==> Using", "==> Starting build",
+         "==> Generating", "==> Creating", "==> WARNING: Possibly missing", "pam_unix")
+STAGES = [("sync", r"Paketdatenbanken werden synchronisiert|Synchronizing package databases", "Paketdatenbanken synchronisieren"),
+          ("resolve", r"Abhängigkeiten werden aufgelöst|Resolving dependencies", "Abhängigkeiten auflösen"),
+          ("download", r"Pakete werden empfangen|Retrieving packages", "Pakete herunterladen"),
+          ("check", r"Schlüsselbund wird geprüft|Checking keyring|Paketintegrität wird geprüft|Checking package integrity", "Schlüssel und Paketintegrität prüfen"),
+          ("pre", r"Pre-transaction-Hooks|pre-transaction hooks", "Pre-Transaction-Hooks ausführen"),
+          ("install", r"Paketänderungen werden verarbeitet|Processing package changes", "Pakete installieren"),
+          ("post", r"Post-transaction-Hooks|post-transaction hooks", "Post-Transaction-Hooks ausführen")]
+STAGES = [(k, re.compile(rx, re.I), t) for k, rx, t in STAGES]
+
+def fmt_dur(secs):
+    secs = max(0, int(secs))
+    if secs < 60: return f"{secs} s"
+    if secs < 3600: return f"{secs // 60} Min {secs % 60:02d} s"
+    return f"{secs // 3600} Std {secs % 3600 // 60:02d} Min"
+
+def new_counter():
+    return SimpleNamespace(total=0, dl=0, inst=0, stage=None, last_dl="", last_pkg="", hook="", size="",
+                           verbs=Counter(), nothing=False, rows=[], last_info="", events=0)
+
+def parse_run(raw):
+    """Wertet das Journal eines Update-Laufs (short-iso) aus: Phasen, Zeiten, Ereignisse, Zähler."""
+    r = SimpleNamespace(phases=[], start={}, end={}, done=None, events=[], raw=[], first=None, last=None,
+                        c={k: new_counter() for k in ("start", "snapshot", "pacman", "aur")})
+    phase = "start"
+    def ev(dt, kind, text): r.events.append((dt, phase, kind, text)); r.c[phase].events += 1
+    for line in raw.splitlines():
+        m = LINE.match(line)
+        if not m: continue
+        dt = DT.strptime(m.group(1), "%Y-%m-%dT%H:%M:%S"); msg = m.group(2).strip()
+        if not msg.strip(): continue
+        r.first = r.first or dt; r.last = dt
+        pm = PHASE.search(msg)
+        if pm:
+            if phase in r.start: r.end[phase] = dt
+            if pm.group(1) == "done":
+                r.done = dt; phase = "done"; r.events.append((dt, "done", "phase", "■ Update beendet")); continue
+            phase = pm.group(1); r.phases.append(phase); r.start[phase] = dt
+            r.c.setdefault(phase, new_counter())
+            r.events.append((dt, phase, "phase", "▶ " + PHASE_TITLES.get(phase, phase))); continue
+        r.raw.append((dt, phase, msg))
+        c = r.c.get(phase) or r.c["start"]
+        if msg.startswith(NOISE) or "[J/n]" in msg or "[Y/n]" in msg: continue
+        st = next(((k, t) for k, rx, t in STAGES if rx.search(msg)), None) if phase == "pacman" else None
+        if st:
+            if c.stage != st[0]:
+                c.stage = st[0]; extra = ""
+                if st[0] == "download" and c.total: extra = f" ({c.total} Pakete{', ' + c.size if c.size else ''})"
+                ev(dt, "stage", f"▸ {st[1]}{extra}")
+            continue
+        mt = RX_TOTAL.match(msg)
+        if mt: c.total = int(mt.group(1)); continue
+        ms = RX_SIZE.match(msg)
+        if ms: c.size = ms.group(1).strip(); continue
+        mr = RX_ROW.match(msg)
+        if mr:
+            c.rows.append(mr.groups()); ev(dt, "plan", f"• {mr.group(1)}  {mr.group(2)} → {mr.group(3)}"); continue
+        mp = RX_PKG_DE.match(msg)
+        if mp: name, verb = mp.groups()
+        else:
+            me = RX_PKG_EN.match(msg)
+            name, verb = (me.group(2), EN_VERBS[me.group(1).lower()]) if me else (None, None)
+        if name:
+            c.inst += 1; c.last_pkg = name; c.verbs[verb] += 1
+            ev(dt, "pkg", f"{PKG_ICON.get(verb, '•')} {name} wird {verb}"); continue
+        md = RX_DL.match(msg)
+        if md:
+            name = md.group(1) or md.group(2)
+            if c.stage == "download": c.dl += 1; c.last_dl = name; ev(dt, "dl", f"⬇ {name}")
+            else: ev(dt, "dl", f"⬇ {name}  (Paketdatenbank)")
+            continue
+        if RX_NOTHING.search(msg): c.nothing = True; ev(dt, "ok", "✓ Nichts zu tun – alles aktuell"); continue
+        if RX_BAD.search(msg): ev(dt, "err", "✕ " + msg[:200]); continue
+        if RX_WARN.search(msg): ev(dt, "warn", "⚠ " + msg[:200]); continue
+        mh = RX_HOOK.match(msg)
+        if mh and phase == "pacman" and not mh.group(3).startswith(("Herunterladen", "Downloading")):
+            c.hook = f"{mh.group(1)}/{mh.group(2)} {mh.group(3)}"; ev(dt, "hook", f"⚙ ({mh.group(1)}/{mh.group(2)}) {mh.group(3)[:150]}"); continue
+        if msg.startswith("==> ") and phase == "pacman":
+            if msg[4:].startswith(("INFO", "WARNING", "ERROR", "root:")): ev(dt, "info", "ℹ " + msg[4:][:160])
+            continue
+        if phase == "aur":
+            t = msg[4:] if msg.startswith("==> ") else msg.lstrip(": ").strip() if msg.startswith("::") else msg
+            if mh or msg.startswith(("==>", "::")) or re.match(r"^[\w.+-]+: ", msg) or msg.endswith(("…", "...")):
+                c.last_info = t[:140]; ev(dt, "aur", "📦 " + t[:160])
+            continue
+        if msg.startswith("::"):
+            ev(dt, "info", "ℹ " + msg.lstrip(": ").strip()[:160])
+    return r
+
+def run_summary(r, ph):
+    """Kurzfassung eines abgeschlossenen Schritts."""
+    c = r.c[ph]
+    if ph == "snapshot": return "Snapshot angelegt"
+    if ph == "pacman":
+        if c.nothing and not c.inst: return "nichts zu aktualisieren"
+        parts = [f"{n} {v}" for v, n in c.verbs.items()]
+        return f"{c.inst} {'Paket' if c.inst == 1 else 'Pakete'}: " + ", ".join(parts) if parts else ""
+    if ph == "aur":
+        if c.rows: return f"{len(c.rows)} Paket(e): " + ", ".join(f"{n} {o}→{v}" for n, o, v in c.rows[:4]) + (" …" if len(c.rows) > 4 else "")
+        return "keine AUR-Updates" if c.events else "keine Ausgabe im Journal"
+    return ""
+
+def run_activity(r, ph):
+    """Was passiert gerade in diesem Schritt (für laufende Schritte)."""
+    c = r.c[ph]
+    if ph == "snapshot": return "Snapper legt einen Snapshot an …"
+    if ph == "pacman":
+        t = c.total
+        return {"sync": "Paketdatenbanken werden synchronisiert …",
+                "resolve": "Abhängigkeiten werden aufgelöst …",
+                "download": f"Lade herunter {c.dl}/{t}" + (f" · {c.last_dl}" if c.last_dl else ""),
+                "check": "Schlüssel und Paketintegrität werden geprüft …",
+                "pre": "Pre-Transaction-Hooks …", "post": f"Post-Transaction-Hooks · {c.hook}",
+                "install": f"Installiere {c.inst}/{t}" + (f" · {c.last_pkg}" if c.last_pkg else "")}.get(c.stage, "Starte pacman …")
+    if ph == "aur":
+        return c.last_info or "Starte paru …"
+    return ""
+
+def timeline_html(r, raw_mode=False):
+    col = {"snapshot": theme["warn"], "pacman": theme["accent"], "aur": "#b57bee", "start": theme["muted"], "done": theme["ok"]}
+    kcol = {"err": theme["err"], "warn": theme["warn"], "ok": theme["ok"], "dl": theme["muted"], "plan": theme["muted"], "hook": theme["muted"]}
+    rows = []
+    items = [(dt, ph, "raw", msg) for dt, ph, msg in r.raw] if raw_mode else r.events
+    for dt, ph, kind, text in items[-500:]:
+        tag = PHASE_TAGS.get(ph, ph)
+        txt = html.escape(text).replace(" ", "&nbsp;") if raw_mode else html.escape(text)
+        style = f"color:{kcol[kind]}" if kind in kcol else ("font-weight:bold" if kind in ("phase", "stage") else "")
+        rows.append(f'<span style="color:{theme["muted"]}">{dt:%H:%M:%S}</span>&nbsp;&nbsp;'
+                    f'<span style="color:{col.get(ph, theme["muted"])}">{tag.ljust(6).replace(" ", "&nbsp;")}</span>&nbsp;'
+                    f'<span style="{style}">{txt}</span>')
+    return "<br>".join(rows) or f'<span style="color:{theme["muted"]}">Noch keine Ereignisse.</span>'
+
 # ---------------------------------------------------------------- Theme
 
 def palette_for(base):
@@ -144,6 +298,9 @@ def make_qss(t):
     QLabel#badge[state="active"] {{ background: {t['accent']}; color: white; border: none; }}
     QLabel#badge[state="done"]   {{ background: {t['ok']}; color: white; border: none; }}
     QLabel#badge[state="failed"] {{ background: {t['err']}; color: white; border: none; }}
+    QLabel#detail {{ font-size: 12px; color: {t['text']}; }}
+    QLabel#detail[state="active"] {{ color: {t['accent']}; font-weight: 600; }}
+    QLabel#detail[state="failed"] {{ color: {t['err']}; }}
     QLabel#stState {{ font-size: 12px; font-weight: 600; color: {t['muted']}; }}
     QLabel#stState[state="active"] {{ color: {t['accent']}; }}
     QLabel#stState[state="done"]   {{ color: {t['ok']}; }}
@@ -165,7 +322,7 @@ def make_qss(t):
                                    selection-background-color: {t['accent']}; selection-color: white; outline: none; }}
     QProgressBar {{ background: {t['border']}; border: none; border-radius: 4px; max-height: 8px; min-height: 8px; }}
     QProgressBar::chunk {{ background: {t['accent']}; border-radius: 4px; }}
-    QPlainTextEdit {{ background: {t['input']}; border: 1px solid {t['border']}; border-radius: 8px;
+    QPlainTextEdit, QTextEdit {{ background: {t['input']}; border: 1px solid {t['border']}; border-radius: 8px;
                      font-family: monospace; font-size: 12px; padding: 6px; }}
     QScrollArea {{ border: none; }}
     QToolTip {{ background: {t['card']}; color: {t['text']}; border: 1px solid {t['border']}; padding: 6px; }}
@@ -245,6 +402,95 @@ class OptionRow(QWidget):
         self.toggle = Toggle(); lay.addWidget(self.toggle, 0, Qt.AlignmentFlag.AlignVCenter)
         if tooltip: self.setToolTip(tooltip)
 
+class PacBar(QWidget):
+    """Fortschrittsanzeige im Arcade-Stil: Pac-Man frisst Punkte und Geister. Gleiche API wie QProgressBar."""
+    GHOSTS = ["#ff4d4d", "#ffb8ff", "#19e3ff", "#ffb852"]
+    SCORES = ["200", "400", "800", "1600"]
+    FRACS = [0.30, 0.52, 0.74, 0.96]
+
+    def __init__(self):
+        super().__init__()
+        self.setFixedHeight(50)
+        self.lo, self.hi, self.val, self.shown = 0, 100, 0, 0.0
+        self.t0 = time.monotonic(); self.eaten = {}
+        self.tm = QTimer(self); self.tm.setInterval(33); self.tm.timeout.connect(self._tick)
+
+    def setRange(self, lo, hi): self.lo, self.hi = lo, hi
+    def setValue(self, v): self.val = v
+    def indeterminate(self): return self.hi <= self.lo
+    def showEvent(self, e): self.tm.start()
+    def hideEvent(self, e): self.tm.stop(); self.shown = 0.0; self.eaten.clear()
+
+    def _tick(self):
+        target = 0.0 if self.indeterminate() else min(1.0, max(0.0, (self.val - self.lo) / (self.hi - self.lo)))
+        if target < self.shown - .3: self.eaten.clear()
+        self.shown += (target - self.shown) * .12
+        if abs(target - self.shown) < .001: self.shown = target
+        self.update()
+
+    def _ghost(self, p, x, cy, col, scared, look, blink=False):
+        r = 12
+        path = QPainterPath(); path.moveTo(x - r, cy + r); path.lineTo(x - r, cy)
+        path.arcTo(QRectF(x - r, cy - r, 2 * r, 2 * r), 180, -180); path.lineTo(x + r, cy + r)
+        seg = 2 * r / 3
+        for i in range(3):
+            xr = x + r - i * seg
+            path.lineTo(xr - seg / 2, cy + r - 6); path.lineTo(xr - seg, cy + r)
+        path.closeSubpath()
+        p.setPen(Qt.PenStyle.NoPen)
+        p.setBrush(QColor("#f4f4ff" if scared and blink else "#2a3cff" if scared else col)); p.drawPath(path)
+        if scared:
+            p.setBrush(QColor("#ffd0c8" if not blink else "#ff4d4d"))
+            for dx in (-4.5, 2.5): p.drawRect(QRectF(x + dx, cy - 5, 2.4, 2.4))
+            p.setPen(QPen(QColor("#ffd0c8" if not blink else "#ff4d4d"), 1.4)); p.setBrush(Qt.BrushStyle.NoBrush)
+            p.drawPolyline(*[QPointF(x - 6 + i * 3, cy + 3 + (2 if i % 2 else 0)) for i in range(5)])
+        else:
+            p.setBrush(QColor("white"))
+            for dx in (-4.5, 4.5): p.drawEllipse(QPointF(x + dx, cy - 3), 3.6, 4.3)
+            p.setBrush(QColor("#1a2cff"))
+            for dx in (-4.5, 4.5): p.drawEllipse(QPointF(x + dx + look * 1.6, cy - 3), 1.8, 1.8)
+
+    def paintEvent(self, _):
+        p = QPainter(self); p.setRenderHint(QPainter.RenderHint.Antialiasing)
+        w, h = self.width(), self.height(); cy = h / 2; R = 13; x0, x1 = 24, w - 24
+        now = time.monotonic() - self.t0
+        # Spielfeld
+        p.setPen(QPen(QColor(40, 60, 255, 190), 2)); p.setBrush(QColor("#0d0f17"))
+        p.drawRoundedRect(QRectF(3, 3, w - 6, h - 6), 12, 12)
+        lo, hi = x0 + R, x1 - R
+        ind = self.indeterminate()
+        if ind:
+            ph = (now / 7.0) % 1.0; tri = 1 - abs(2 * ph - 1); dirn = 1 if ph < .5 else -1
+            px = lo + tri * max(0, hi - lo - 130)
+        else:
+            px, dirn = lo + self.shown * (hi - lo), 1
+        # Punkte
+        p.setPen(Qt.PenStyle.NoPen); p.setBrush(QColor("#f1d9a0"))
+        for x in range(int(lo), int(hi) + 1, 18):
+            if abs(x - px) > R + 2 and (ind or x > px): p.drawEllipse(QPointF(x, cy), 2.2, 2.2)
+        # Geister
+        if ind:
+            chase = dirn > 0
+            for i, col in enumerate(self.GHOSTS):
+                self._ghost(p, px + 34 + i * 30, cy, col, chase, 1)
+        else:
+            for i, (f, col) in enumerate(zip(self.FRACS, self.GHOSTS)):
+                gx = lo + f * (hi - lo)
+                if px >= gx - 2:
+                    t0 = self.eaten.setdefault(i, now)
+                    if now - t0 < .9:      # Punkte-Anzeige nach dem Fressen
+                        p.setPen(QColor(25, 227, 255, int(255 * (1 - (now - t0) / .9)))); f2 = QFont(); f2.setBold(True); f2.setPixelSize(11)
+                        p.setFont(f2); p.drawText(QPointF(gx - 10, cy - 15 - (now - t0) * 8), self.SCORES[i])
+                    continue
+                near = gx - px
+                self._ghost(p, gx, cy, col, near < 110, -1, blink=near < 40 and int(now * 8) % 2 == 0)
+        # Pac-Man
+        mh = 4 + 36 * abs(math.sin(now * 10))
+        p.setPen(Qt.PenStyle.NoPen); p.setBrush(QColor("#ffd400"))
+        start = mh if dirn > 0 else 180 + mh
+        p.drawPie(QRectF(px - R, cy - R, 2 * R, 2 * R), int(start * 16), int((360 - 2 * mh) * 16))
+        p.setBrush(QColor("#0d0f17")); p.drawEllipse(QPointF(px + dirn * 1.5, cy - R * .5), 1.8, 1.8)
+
 class StepRow(QWidget):
     def __init__(self, num, title, desc):
         super().__init__()
@@ -256,14 +502,16 @@ class StepRow(QWidget):
         col = QVBoxLayout(); col.setSpacing(2)
         col.addWidget(make_label(title, "rowTitle"))
         self.desc = make_label(desc, "desc", True); col.addWidget(self.desc)
+        self.detail = make_label("", "detail", True); self.detail.hide(); col.addWidget(self.detail)
         lay.addLayout(col, 1)
         self.state = make_label("", "stState"); self.state.setAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignTop)
         lay.addWidget(self.state, 0, Qt.AlignmentFlag.AlignTop)
 
-    def set(self, state, text):
+    def set(self, state, text, detail=""):
         glyph = {"done": "✓", "failed": "✕", "off": "–", "active": "●"}.get(state, self.num)
         self.badge.setText(glyph); set_state(self.badge, state)
         self.state.setText(text); set_state(self.state, state)
+        self.detail.setText(detail); self.detail.setVisible(bool(detail)); set_state(self.detail, state)
         self.setEnabled(state != "off")
 
 class SettingsDialog(QDialog):
@@ -425,12 +673,17 @@ class Win(QWidget):
         self.rows = {}
         for i, (key, title, desc) in enumerate(STEPS, 1):
             self.rows[key] = StepRow(i, title, desc); c.lay.addWidget(self.rows[key])
-        self.bar = QProgressBar(); self.bar.setTextVisible(False); self.bar.hide(); c.lay.addWidget(self.bar)
+        self.bar = PacBar(); self.bar.hide(); c.lay.addWidget(self.bar)
         self.live = make_label("", "mono", True); self.live.hide(); c.lay.addWidget(self.live)
-        self.logbtn = QPushButton("Live-Ausgabe anzeigen ▾"); self.logbtn.setObjectName("flat")
-        self.logbtn.clicked.connect(self.toggle_live); c.lay.addWidget(self.logbtn, 0, Qt.AlignmentFlag.AlignLeft)
-        self.liveview = QPlainTextEdit(); self.liveview.setReadOnly(True); self.liveview.setFixedHeight(150)
-        self.liveview.hide(); c.lay.addWidget(self.liveview)
+        lrow = QHBoxLayout(); c.lay.addLayout(lrow)
+        self.logbtn = QPushButton("Ablaufprotokoll anzeigen ▾"); self.logbtn.setObjectName("flat")
+        self.logbtn.clicked.connect(self.toggle_live); lrow.addWidget(self.logbtn)
+        self.rawbtn = QPushButton("Rohausgabe"); self.rawbtn.setObjectName("flat"); self.rawbtn.setCheckable(True)
+        self.rawbtn.setToolTip("Alle Zeilen unverändert statt der ausgewerteten Ereignisse"); self.rawbtn.hide()
+        self.rawbtn.toggled.connect(lambda *_: self.refresh_liveview()); lrow.addWidget(self.rawbtn); lrow.addStretch()
+        self.liveview = QTextEdit(); self.liveview.setReadOnly(True); self.liveview.setFixedHeight(260)
+        self.liveview.setFont(QFont("monospace", 9)); self.liveview.hide(); c.lay.addWidget(self.liveview)
+        self.cur_run = None
 
         # Karte: Status
         c = Card("Status"); lay.addWidget(c)
@@ -532,9 +785,18 @@ class Win(QWidget):
 
     def toggle_live(self):
         show = not self.liveview.isVisible()
-        self.liveview.setVisible(show)
-        self.logbtn.setText("Live-Ausgabe verbergen ▴" if show else "Live-Ausgabe anzeigen ▾")
-        if show: self.poll(force=True)
+        self.liveview.setVisible(show); self.rawbtn.setVisible(show)
+        self.logbtn.setText("Ablaufprotokoll verbergen ▴" if show else "Ablaufprotokoll anzeigen ▾")
+        if show: self.refresh_liveview()
+
+    def refresh_liveview(self):
+        if not self.liveview.isVisible(): return
+        sb = self.liveview.verticalScrollBar(); at_end = sb.value() >= sb.maximum() - 4; pos = sb.value()
+        h = f'<span style="color:{theme["muted"]}">Noch kein Lauf aufgezeichnet.</span>' if self.cur_run is None \
+            else timeline_html(self.cur_run, self.rawbtn.isChecked())
+        if h == getattr(self, "_lv_html", None): return      # unverändert: nicht neu setzen (Scroll/Auswahl erhalten)
+        self._lv_html = h; self.liveview.setHtml(h)
+        sb.setValue(sb.maximum() if at_end else pos)
 
     # ---- Einstellungen
     def ui_state(self):
@@ -569,7 +831,7 @@ class Win(QWidget):
         self.applybtn.setEnabled(dirty)
         self.feedback.setText("● Ungespeicherte Änderungen" if dirty else self.feedback.text() if self.feedback.property("keep") else "")
         self.refresh_header()
-        self.render_steps(self.was_active, "")
+        self.render_steps(self.was_active, self.cur_run if self.was_active else (self.last[0] if self.last else None), None if self.was_active or not self.last else self.last[1])
 
     # ---- Anzeige
     def refresh_header(self, running=None):
@@ -603,69 +865,92 @@ class Win(QWidget):
         else:
             self.st_last.setText("Noch nie ausgeführt")
 
-    def render_steps(self, running, log, result=None):
+    def fetch_run(self):
+        """Journal des aktuellen/letzten Laufs holen und auswerten (None, wenn es keinen gibt)."""
+        inv = sh("systemctl", "show", "auto-update.service", "-p", "InvocationID", "--value").stdout.strip()
+        raw = sh("journalctl", f"_SYSTEMD_INVOCATION_ID={inv}", "-o", "short-iso", "--no-pager").stdout if inv else ""
+        r = parse_run(raw)
+        # Ältere Läufe: paru lief in einer eigenen Login-Session (anderes Journal-Feld) -> Zeilen nachladen
+        if "aur" in r.phases and r.c["aur"].events <= 1:
+            since = r.start["aur"].strftime("%Y-%m-%d %H:%M:%S")
+            cmd = ["journalctl", "--since", since, "-o", "short-iso", "--no-pager", f"_UID={os.getuid()}", "SYSLOG_IDENTIFIER=systemd-inhibit"]
+            if r.done: cmd[3:3] = ["--until", (r.done).strftime("%Y-%m-%d %H:%M:%S")]
+            extra = sh(*cmd).stdout
+            if extra.strip():
+                lines = [l for l in (raw + "\n" + extra).splitlines() if l.strip()]
+                lines.sort(key=lambda l: l[:19])
+                r = parse_run("\n".join(lines))
+        return r
+
+    def render_steps(self, running, r, result=None):
         """Zeigt den Ablauf: live (running), letzter Lauf (result) oder Vorschau."""
-        phases = [p for p in PHASE.findall(log) if p != "done"]
-        cur = phases[-1] if phases else None
-        info = {}
-        if running:
-            self.flow_title.setText("Läuft gerade")
-            if cur is None: cur = "snapshot" if self.conf.get("SNAPSHOT") == "1" else "pacman"
-            keys = [k for k, _, _ in STEPS]
+        have = r is not None and bool(r.phases)
+        keys = [k for k, _, _ in STEPS]
+        info = {}; now = DT.now()
+        enabled = {"snapshot": self.conf.get("SNAPSHOT", "1") == "1", "pacman": True, "aur": self.conf.get("AUR") == "1"}
+        def times(k):
+            a = r.start.get(k); b = r.end.get(k) or (r.done if r.done else None)
+            return a, b
+        if running and r is not None:
+            cur = r.phases[-1] if r.phases else next((k for k in keys if enabled[k]), "pacman")
+            self.flow_title.setText(f"Läuft seit {r.first:%H:%M:%S} · {fmt_dur((now - r.first).total_seconds())}" if r.first else "Läuft gerade")
             for k in keys:
-                en = {"snapshot": self.conf.get("SNAPSHOT", "1") == "1", "pacman": True,
-                      "aur": self.conf.get("AUR") == "1"}[k]
-                if not en: info[k] = ("off", "Übersprungen")
-                elif keys.index(k) < keys.index(cur): info[k] = ("done", "Fertig")
-                elif k == cur: info[k] = ("active", "Läuft …")
-                else: info[k] = ("idle", "Wartet")
-            st = STEP.findall(log)
-            if cur == "pacman" and st:
-                n, m, verb = st[-1]; info["pacman"] = ("active", f"{n}/{m} {verb}")
-        elif result is not None and phases:
-            self.flow_title.setText("Letzter Lauf")
-            for k, _, _ in STEPS:
-                if k not in phases: info[k] = ("off", "Nicht ausgeführt")
-                elif result != "success" and k == cur: info[k] = ("failed", "Fehler")
-                else: info[k] = ("done", "Fertig")
+                a, b = times(k)
+                if k in r.phases and k != cur:
+                    info[k] = ("done", f"Fertig · {fmt_dur((b - a).total_seconds())}" if a and b else "Fertig",
+                               f"{a:%H:%M:%S} – {b:%H:%M:%S} · {run_summary(r, k)}".rstrip(" ·") if a and b else "")
+                elif k == cur:
+                    el = fmt_dur((now - a).total_seconds()) if a else ""
+                    info[k] = ("active", f"Läuft · {el}" if el else "Läuft …", (f"seit {a:%H:%M:%S} · " if a else "") + run_activity(r, k))
+                elif not enabled[k] and k not in r.phases: info[k] = ("off", "Übersprungen", "")
+                else: info[k] = ("idle", "Wartet", "")
+        elif have and result is not None:
+            fail = result != "success"
+            bad = next((k for k in r.phases if any(e[1] == k and e[2] == "err" for e in r.events)), r.phases[-1]) if fail else None
+            end = r.done or r.last
+            self.flow_title.setText(f"Letzter Lauf · {r.first:%d.%m. %H:%M} · {fmt_dur((end - r.first).total_seconds())}")
+            for k in keys:
+                a, b = times(k)
+                if k not in r.phases: info[k] = ("off", "Nicht ausgeführt", ""); continue
+                dur = f" · {fmt_dur((b - a).total_seconds())}" if a and b else ""
+                span = f"{a:%H:%M:%S} – {b:%H:%M:%S} · " if a and b else ""
+                info[k] = ("failed", "Fehler" + dur, span + "mit Fehlern beendet – siehe Protokoll") if k == bad else \
+                          ("done", "Fertig" + dur, (span + run_summary(r, k)).rstrip(" ·"))
         else:
             self.flow_title.setText("Geplanter Ablauf")
             on = self.enable.isChecked()
-            for k, _, _ in STEPS:
+            for k in keys:
                 en = {"snapshot": self.snap.isChecked(), "pacman": True, "aur": self.aur.isChecked()}[k]
-                info[k] = ("idle", "Geplant") if on and en else ("off", "Aus")
-        for k, (s, text) in info.items(): self.rows[k].set(s, text)
+                info[k] = ("idle", "Geplant", "") if on and en else ("off", "Aus", "")
+        for k, (st, text, detail) in info.items(): self.rows[k].set(st, text, detail)
 
     def load_last(self):
-        inv = sh("systemctl", "show", "auto-update.service", "-p", "InvocationID", "--value").stdout.strip()
         res = sh("systemctl", "show", "auto-update.service", "-p", "Result", "--value").stdout.strip()
-        log = sh("journalctl", f"_SYSTEMD_INVOCATION_ID={inv}", "-o", "cat", "--no-pager").stdout if inv else ""
-        self.last = (log, res)
-        if not self.was_active: self.render_steps(False, log, res)
+        r = self.fetch_run()
+        self.last = (r, res)
+        if not self.was_active:
+            self.cur_run = r if r.phases else None
+            self.render_steps(False, r, res); self.refresh_liveview()
 
     def poll(self, force=False):
         active = sh("systemctl", "is-active", "auto-update.service").stdout.strip() in ("active", "activating")
         if active:
-            inv = sh("systemctl", "show", "auto-update.service", "-p", "InvocationID", "--value").stdout.strip()
-            log = sh("journalctl", f"_SYSTEMD_INVOCATION_ID={inv}", "-o", "cat", "--no-pager").stdout
-            steps = STEP.findall(log)
+            r = self.fetch_run(); self.cur_run = r
             if not self.was_active: self.conf = load_conf(); self.refresh_header(True)
-            self.render_steps(True, log)
+            self.render_steps(True, r)
             self.bar.show(); self.live.show()
-            lines = [l for l in log.splitlines() if l.strip() and not PHASE.search(l)]
-            self.live.setText(lines[-1][:160] if lines else "Starte …")
-            if self.liveview.isVisible():
-                self.liveview.setPlainText("\n".join(log.splitlines()[-80:]))
-                self.liveview.verticalScrollBar().setValue(self.liveview.verticalScrollBar().maximum())
-            phases = PHASE.findall(log)
-            if steps and phases and phases[-1] == "pacman":
-                n, m, verb = steps[-1]; n, m = int(n), int(m)
-                self.bar.setRange(0, m); self.bar.setValue(n)
-                text = f"Update läuft … {verb} {n}/{m}"
+            cur = r.phases[-1] if r.phases else None
+            c = r.c[cur] if cur else None
+            if cur == "pacman" and c.total and c.stage in ("download", "install"):
+                self.bar.setRange(0, c.total); self.bar.setValue(c.dl if c.stage == "download" else c.inst)
             else:
-                self.bar.setRange(0, 0)  # unbestimmt
-                text = "Update läuft … (Snapshot / Download)" if not steps else "Update läuft …"
-            self.tray.setToolTip(text)
+                self.bar.setRange(0, 0)  # unbestimmt: Pac-Man jagt die Geister
+            act = run_activity(r, cur) if cur else "Starte …"
+            age = (DT.now() - r.last).total_seconds() if r.last else 0
+            quiet = f"  ·  letzte Ausgabe vor {fmt_dur(age)}" if age >= 10 else ""
+            self.live.setText(f"{PHASE_TAGS.get(cur, 'Start')}: {act}{quiet}")
+            self.refresh_liveview()
+            self.tray.setToolTip(f"Update läuft – {PHASE_TAGS.get(cur, 'Start')}: {act}"[:120])
         elif self.was_active:
             self.bar.hide(); self.live.hide()
             self.load_last(); self.refresh_status()
@@ -674,9 +959,7 @@ class Win(QWidget):
             self.notify("Automatische Updates", "Update abgeschlossen." if ok else f"Update fehlgeschlagen ({self.last[1]}).",
                                   QSystemTrayIcon.MessageIcon.Information if ok else QSystemTrayIcon.MessageIcon.Warning)
             QTimer.singleShot(5000, lambda: self.check_updates(True))
-            if self.liveview.isVisible() and self.last[0]: self.liveview.setPlainText("\n".join(self.last[0].splitlines()[-80:]))
-        elif force and self.last and self.liveview.isVisible():
-            self.liveview.setPlainText("\n".join(self.last[0].splitlines()[-80:]))
+            self.cur_run = self.last[0] if self.last[0].phases else None; self.refresh_liveview()
         self.was_active = active
         self.ticks += 1
         if not active and self.ticks % 15 == 0: self.refresh_status()
@@ -832,7 +1115,7 @@ class Win(QWidget):
     def show_log(self):
         d = QDialog(self); d.setWindowTitle("Update-Log"); d.resize(760, 480)
         v = QVBoxLayout(d); t = QPlainTextEdit(); t.setReadOnly(True); v.addWidget(t)
-        t.setPlainText(sh("journalctl", "-u", "auto-update.service", "-n", "200", "--no-pager").stdout or "Keine Einträge.")
+        t.setPlainText(sh("journalctl", "-u", "auto-update.service", "-n", "400", "--no-pager").stdout or "Keine Einträge.")
         t.verticalScrollBar().setValue(t.verticalScrollBar().maximum())
         d.exec()
 

@@ -4,6 +4,10 @@ Moderne Qt6-Oberfläche für automatische Systemupdates unter Arch Linux / Cachy
 Man sieht jederzeit, **was** das Tool gerade tut – und es ersetzt das Cachy-Update-Tray-Applet.
 
 <p align="center">
+  <img src="docs/screenshot-ablauf.png" width="520" alt="Ablauf mit Pac-Man und Zeitleiste">
+</p>
+
+<p align="center">
   <img src="docs/screenshot-running.png" width="360" alt="Update läuft (dunkles Theme)">
   &nbsp;
   <img src="docs/screenshot-light.png" width="360" alt="Letzter Lauf (helles Theme)">
@@ -16,7 +20,10 @@ Man sieht jederzeit, **was** das Tool gerade tut – und es ersetzt das Cachy-Up
   verpasste Läufe nach dem nächsten Start nach (`Persistent`)
 - **Btrfs-Snapshot** mit Snapper vor jedem Update (optional)
 - **AUR-Updates** über paru (optional, mit Sicherheitshinweis)
-- **Ablaufanzeige** Snapshot → pacman → AUR mit Live-Status, Fortschrittsbalken und Live-Log
+- **Ablaufanzeige** Snapshot → pacman → AUR mit Start-/Endzeit und Dauer pro Schritt, aktueller Tätigkeit
+  („Lade herunter 12/20 · mesa“, „AUR: docker-desktop · Lese pkg Liste …“) und „letzte Ausgabe vor …“
+- **Ablaufprotokoll** mit Uhrzeit pro Ereignis: was wann heruntergeladen, installiert und gebaut wurde (pacman und AUR getrennt); Rohausgabe umschaltbar
+- **Pac-Man** als Fortschrittsanzeige: frisst Punkte und Geister, jagt sie bei unbestimmter Dauer 👾
 - **Systray** mit Update-Zähler als Badge und Benachrichtigung; Check alle 3 Stunden
 - Animierte Switches, Karten-Layout; **Einstellungen** (⚙ im Fenster oder Tray-Menü): Farbschema hell/dunkel/System,
   Akzentfarbe, Prüfintervall, Benachrichtigungen, Autostart – alles live umschaltbar
