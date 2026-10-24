@@ -10,7 +10,7 @@ from PyQt6.QtWidgets import (QAbstractButton, QApplication, QCheckBox, QComboBox
     QHBoxLayout, QLabel, QMenu, QMessageBox, QPlainTextEdit, QProgressBar, QPushButton, QScrollArea,
     QSizePolicy, QSystemTrayIcon, QTextEdit, QTimeEdit, QVBoxLayout, QWidget)
 
-VERSION = "1.2.0"
+VERSION = "1.2.1"
 REPO = "peter1965p/auto-update-gui"
 CONF = "/etc/auto-update.conf"
 DAYS = [("Montag","Mon"),("Dienstag","Tue"),("Mittwoch","Wed"),("Donnerstag","Thu"),
@@ -122,9 +122,40 @@ def fmt_dur(secs):
     if secs < 3600: return f"{secs // 60} Min {secs % 60:02d} s"
     return f"{secs // 3600} Std {secs % 3600 // 60:02d} Min"
 
+def parse_size(txt):
+    """'140,98 MiB' / '1.234,5 KiB' -> Bytes"""
+    m = re.match(r"([\d.,]+)\s*([KMGT]?i?B)", txt.strip())
+    if not m: return 0
+    num = m.group(1)
+    num = num.replace(".", "").replace(",", ".") if "," in num else num
+    mult = {"B": 1, "KiB": 1024, "MiB": 1024 ** 2, "GiB": 1024 ** 3, "TiB": 1024 ** 4}.get(m.group(2), 1)
+    try: return int(float(num) * mult)
+    except ValueError: return 0
+
+def fmt_size(b):
+    return (f"{b / 1024 ** 3:.2f}".replace(".", ",") + " GiB") if b >= 1024 ** 3 else (f"{b / 1024 ** 2:.1f}".replace(".", ",") + " MiB")
+
+_cache_dir = []
+def download_progress(since):
+    """Bytes, die seit 'since' im pacman-Cache liegen (fertige + wachsende .part-Dateien) und die Namen der aktiven Downloads."""
+    if not _cache_dir:
+        out = sh("pacman-conf", "CacheDir").stdout.split()
+        _cache_dir.append(out[0] if out else "/var/cache/pacman/pkg/")
+    total, active = 0, []
+    try:
+        for e in os.scandir(_cache_dir[0]):
+            if ".pkg.tar" not in e.name or e.name.endswith(".sig"): continue
+            st = e.stat()
+            if st.st_mtime >= since:
+                total += st.st_size
+                if e.name.endswith(".part"): active.append(e.name.split(".pkg.tar")[0].rsplit("-", 3)[0])
+    except OSError:
+        pass
+    return total, active
+
 def new_counter():
     return SimpleNamespace(total=0, dl=0, inst=0, stage=None, last_dl="", last_pkg="", hook="", size="",
-                           verbs=Counter(), nothing=False, rows=[], last_info="", events=0)
+                           verbs=Counter(), nothing=False, rows=[], last_info="", events=0, stage_at={}, size_bytes=0, dl_live="")
 
 def parse_run(raw):
     """Wertet das Journal eines Update-Laufs (short-iso) aus: Phasen, Zeiten, Ereignisse, Zähler."""
@@ -152,14 +183,14 @@ def parse_run(raw):
         st = next(((k, t) for k, rx, t in STAGES if rx.search(msg)), None) if phase == "pacman" else None
         if st:
             if c.stage != st[0]:
-                c.stage = st[0]; extra = ""
+                c.stage = st[0]; c.stage_at[st[0]] = dt; extra = ""
                 if st[0] == "download" and c.total: extra = f" ({c.total} Pakete{', ' + c.size if c.size else ''})"
                 ev(dt, "stage", f"▸ {st[1]}{extra}")
             continue
         mt = RX_TOTAL.match(msg)
         if mt: c.total = int(mt.group(1)); continue
         ms = RX_SIZE.match(msg)
-        if ms: c.size = ms.group(1).strip(); continue
+        if ms: c.size = ms.group(1).strip(); c.size_bytes = parse_size(c.size); continue
         mr = RX_ROW.match(msg)
         if mr:
             c.rows.append(mr.groups()); ev(dt, "plan", f"• {mr.group(1)}  {mr.group(2)} → {mr.group(3)}"); continue
@@ -216,7 +247,7 @@ def run_activity(r, ph):
         t = c.total
         return {"sync": "Paketdatenbanken werden synchronisiert …",
                 "resolve": "Abhängigkeiten werden aufgelöst …",
-                "download": f"Lade herunter {c.dl}/{t}" + (f" · {c.last_dl}" if c.last_dl else ""),
+                "download": c.dl_live or f"Lade herunter {c.dl}/{t}" + (f" · {c.last_dl}" if c.last_dl else ""),
                 "check": "Schlüssel und Paketintegrität werden geprüft …",
                 "pre": "Pre-Transaction-Hooks …", "post": f"Post-Transaction-Hooks · {c.hook}",
                 "install": f"Installiere {c.inst}/{t}" + (f" · {c.last_pkg}" if c.last_pkg else "")}.get(c.stage, "Starte pacman …")
@@ -480,7 +511,7 @@ class PacBar(QWidget):
                     t0 = self.eaten.setdefault(i, now)
                     if now - t0 < .9:      # Punkte-Anzeige nach dem Fressen
                         p.setPen(QColor(25, 227, 255, int(255 * (1 - (now - t0) / .9)))); f2 = QFont(); f2.setBold(True); f2.setPixelSize(11)
-                        p.setFont(f2); p.drawText(QPointF(gx - 10, cy - 15 - (now - t0) * 8), self.SCORES[i])
+                        p.setFont(f2); p.drawText(QPointF(gx - 10, cy + 5 - (now - t0) * 6), self.SCORES[i])
                     continue
                 near = gx - px
                 self._ghost(p, gx, cy, col, near < 110, -1, blink=near < 40 and int(now * 8) % 2 == 0)
@@ -608,7 +639,7 @@ class Win(QWidget):
         self.setObjectName("root")
         self.setWindowTitle("Automatische Updates")
         self.setWindowIcon(QIcon.fromTheme("system-software-update"))
-        self.resize(600, 820); self.setMinimumWidth(520)
+        self.resize(620, 820); self.setMinimumWidth(560)
 
         outer = QVBoxLayout(self); outer.setContentsMargins(0, 0, 0, 0); outer.setSpacing(0)
         scroll = QScrollArea(); scroll.setWidgetResizable(True); scroll.setFrameShape(QFrame.Shape.NoFrame)
@@ -679,11 +710,14 @@ class Win(QWidget):
         self.logbtn = QPushButton("Ablaufprotokoll anzeigen ▾"); self.logbtn.setObjectName("flat")
         self.logbtn.clicked.connect(self.toggle_live); lrow.addWidget(self.logbtn)
         self.rawbtn = QPushButton("Rohausgabe"); self.rawbtn.setObjectName("flat"); self.rawbtn.setCheckable(True)
-        self.rawbtn.setToolTip("Alle Zeilen unverändert statt der ausgewerteten Ereignisse"); self.rawbtn.hide()
-        self.rawbtn.toggled.connect(lambda *_: self.refresh_liveview()); lrow.addWidget(self.rawbtn); lrow.addStretch()
+        self.rawbtn.setToolTip("Alle Zeilen unverändert (an) oder ausgewertete Ereignisse mit Symbolen (aus)"); self.rawbtn.hide()
+        self.rawbtn.setChecked(flag("rawview", True))      # Standard: Rohausgabe, Auswahl wird gemerkt
+        self.rawbtn.toggled.connect(lambda on: (cfg.setValue("rawview", on), self.refresh_liveview()))
+        lrow.addWidget(self.rawbtn); lrow.addStretch()
         self.liveview = QTextEdit(); self.liveview.setReadOnly(True); self.liveview.setFixedHeight(260)
         self.liveview.setFont(QFont("monospace", 9)); self.liveview.hide(); c.lay.addWidget(self.liveview)
-        self.cur_run = None
+        self.cur_run = None; self.dl_hist = []; self._live_text = ""; self._spin = 0
+        self.spinner = QTimer(self); self.spinner.timeout.connect(self.spin_tick); self.spinner.start(110)
 
         # Karte: Status
         c = Card("Status"); lay.addWidget(c)
@@ -711,11 +745,11 @@ class Win(QWidget):
         fl = QHBoxLayout(foot); fl.setContentsMargins(22, 8, 22, 16); fl.setSpacing(8)
         b = QPushButton("Schließen"); b.setObjectName("flat"); b.setToolTip("Fenster schließen, das Tool läuft im Systray weiter")
         b.clicked.connect(self.hide); fl.addWidget(b)
-        self.feedback = make_label("", "muted"); fl.addWidget(self.feedback, 1)
-        b = QPushButton("Log anzeigen"); b.clicked.connect(self.show_log); fl.addWidget(b)
-        b = QPushButton("Jetzt ausführen"); b.clicked.connect(self.run_now); fl.addWidget(b)
+        self.feedback = make_label("", "muted"); self.feedback.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Preferred); fl.addWidget(self.feedback, 1)
+        b = QPushButton("Log anzeigen"); b.clicked.connect(self.show_log); b.setSizePolicy(QSizePolicy.Policy.Fixed, QSizePolicy.Policy.Fixed); fl.addWidget(b)
+        b = QPushButton("Jetzt ausführen"); b.clicked.connect(self.run_now); b.setSizePolicy(QSizePolicy.Policy.Fixed, QSizePolicy.Policy.Fixed); fl.addWidget(b)
         self.applybtn = QPushButton("Anwenden"); self.applybtn.setObjectName("primary")
-        self.applybtn.clicked.connect(self.apply); fl.addWidget(self.applybtn)
+        self.applybtn.clicked.connect(self.apply); self.applybtn.setSizePolicy(QSizePolicy.Policy.Fixed, QSizePolicy.Policy.Fixed); fl.addWidget(self.applybtn)
 
         # Systray
         self.tray = QSystemTrayIcon(QIcon.fromTheme("system-software-update"), self)
@@ -771,7 +805,7 @@ class Win(QWidget):
     def quit(self):
         # Tray-Icon sofort entfernen, Timer/Prozesse stoppen, notfalls hart beenden
         self.tray.setVisible(False)
-        for t in (self.timer, self.checker, self.vchecker): t.stop()
+        for t in (self.timer, self.checker, self.vchecker, self.spinner): t.stop()
         for p in list(self.procs.values()) + [self.selfproc, self.aurproc if hasattr(self, "aurproc") else None]:
             if p: p.kill(); p.waitForFinished(500)
         self.app.quit()
@@ -788,6 +822,12 @@ class Win(QWidget):
         self.liveview.setVisible(show); self.rawbtn.setVisible(show)
         self.logbtn.setText("Ablaufprotokoll verbergen ▴" if show else "Ablaufprotokoll anzeigen ▾")
         if show: self.refresh_liveview()
+
+    def spin_tick(self):
+        """Kleiner Spinner vor der Statuszeile: zeigt, dass das Tool lebt, auch wenn pacman gerade nichts ausgibt."""
+        if not self.live.isVisible(): return
+        self._spin = (self._spin + 1) % 10
+        self.live.setText("⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏"[self._spin] + "  " + self._live_text)
 
     def refresh_liveview(self):
         if not self.liveview.isVisible(): return
@@ -829,7 +869,7 @@ class Win(QWidget):
         self.summary.setText(s)
         dirty = self.saved is not None and self.ui_state() != self.saved
         self.applybtn.setEnabled(dirty)
-        self.feedback.setText("● Ungespeicherte Änderungen" if dirty else self.feedback.text() if self.feedback.property("keep") else "")
+        self.feedback.setText("● Ungespeichert" if dirty else self.feedback.text() if self.feedback.property("keep") else "")
         self.refresh_header()
         self.render_steps(self.was_active, self.cur_run if self.was_active else (self.last[0] if self.last else None), None if self.was_active or not self.last else self.last[1])
 
@@ -936,21 +976,36 @@ class Win(QWidget):
         active = sh("systemctl", "is-active", "auto-update.service").stdout.strip() in ("active", "activating")
         if active:
             r = self.fetch_run(); self.cur_run = r
-            if not self.was_active: self.conf = load_conf(); self.refresh_header(True)
-            self.render_steps(True, r)
+            if not self.was_active: self.conf = load_conf(); self.refresh_header(True); self.dl_hist = []
             self.bar.show(); self.live.show()
             cur = r.phases[-1] if r.phases else None
             c = r.c[cur] if cur else None
-            if cur == "pacman" and c.total and c.stage in ("download", "install"):
-                self.bar.setRange(0, c.total); self.bar.setValue(c.dl if c.stage == "download" else c.inst)
+            progressing = False
+            if cur == "pacman" and c.stage == "download" and c.size_bytes:
+                # pacman schreibt beim Download nichts ins Journal -> Fortschritt aus dem Paket-Cache lesen
+                got, active = download_progress(c.stage_at["download"].timestamp() - 3)
+                nowt = time.monotonic(); self.dl_hist = [(t, b) for t, b in self.dl_hist if nowt - t < 12] + [(nowt, got)]
+                (t0, b0) = self.dl_hist[0]; speed = (got - b0) / (nowt - t0) if nowt - t0 >= 2 else 0
+                progressing = speed > 0 or got > b0
+                pct = min(100, int(got * 100 / c.size_bytes))
+                eta = f" · noch ca. {fmt_dur((c.size_bytes - got) / speed)}" if speed > 1024 and got < c.size_bytes else ""
+                c.dl_live = (f"Lade herunter {fmt_size(got)} / {c.size} ({pct} %)"
+                             + (f" · {fmt_size(speed)}/s" if speed > 1024 else "") + eta
+                             + (f" · lädt: {', '.join(active[:3])}{' …' if len(active) > 3 else ''}" if active else "")
+                             if got else f"Verbindung zum Server … ({c.total} Pakete, {c.size})")
+                self.bar.setRange(0, 1000); self.bar.setValue(got * 1000 // c.size_bytes)
+            elif cur == "pacman" and c.total and c.stage == "install":
+                self.bar.setRange(0, c.total); self.bar.setValue(c.inst)
             else:
                 self.bar.setRange(0, 0)  # unbestimmt: Pac-Man jagt die Geister
+            if cur != "pacman" or c.stage != "download": self.dl_hist = []
+            self.render_steps(True, r)
             act = run_activity(r, cur) if cur else "Starte …"
             age = (DT.now() - r.last).total_seconds() if r.last else 0
-            quiet = f"  ·  letzte Ausgabe vor {fmt_dur(age)}" if age >= 10 else ""
-            self.live.setText(f"{PHASE_TAGS.get(cur, 'Start')}: {act}{quiet}")
+            quiet = f"  ·  letzte Ausgabe vor {fmt_dur(age)}" if age >= 10 and not progressing else ""
+            self._live_text = f"{PHASE_TAGS.get(cur, 'Start')}: {act}{quiet}"
             self.refresh_liveview()
-            self.tray.setToolTip(f"Update läuft – {PHASE_TAGS.get(cur, 'Start')}: {act}"[:120])
+            self.tray.setToolTip(f"Update läuft – {PHASE_TAGS.get(cur, 'Start')}: {act}"[:120]); self.spin_tick()
         elif self.was_active:
             self.bar.hide(); self.live.hide()
             self.load_last(); self.refresh_status()
