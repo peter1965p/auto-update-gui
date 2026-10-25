@@ -4,6 +4,10 @@ Moderne Qt6-Oberfläche für automatische Systemupdates unter Arch Linux / Cachy
 Man sieht jederzeit, **was** das Tool gerade tut – und es ersetzt das Cachy-Update-Tray-Applet.
 
 <p align="center">
+  <img src="docs/screenshot-wide.png" width="760" alt="Breite Ansicht: Einstellungen, Status und Updates nebeneinander">
+</p>
+
+<p align="center">
   <img src="docs/screenshot-ablauf.png" width="520" alt="Ablauf mit Pac-Man und Zeitleiste">
 </p>
 
@@ -26,6 +30,7 @@ Man sieht jederzeit, **was** das Tool gerade tut – und es ersetzt das Cachy-Up
 - **Download-Fortschritt in Echtzeit** (auch wenn pacman nichts ausgibt): MiB, Prozent, Geschwindigkeit, Restzeit und die gerade ladenden Pakete – gelesen aus dem pacman-Cache
 - **Pac-Man** als Fortschrittsanzeige: frisst Punkte und Geister, jagt sie bei unbestimmter Dauer 👾
 - **Systray** mit Update-Zähler als Badge und Benachrichtigung; Check alle 3 Stunden
+- Responsives Layout: breit = Einstellungen links, Status und verfügbare Updates rechts, Ablauf darunter; schmal = eine Spalte
 - Animierte Switches, Karten-Layout; **Einstellungen** (⚙ im Fenster oder Tray-Menü): Farbschema hell/dunkel/System,
   Akzentfarbe, Prüfintervall, Benachrichtigungen, Autostart – alles live umschaltbar
 - **Selbst-Update:** prüft GitHub-Releases; bei neuer Version erscheint ein Hinweis mit Knopf „Jetzt aktualisieren“
