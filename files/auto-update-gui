@@ -446,7 +446,8 @@ class PacBar(QWidget):
 
     def __init__(self):
         super().__init__()
-        self.setFixedHeight(50)
+        self.sc = .78                       # Anzeige-Maßstab (kompakt); gezeichnet wird in 50 px Höhe
+        self.setFixedHeight(round(50 * self.sc))
         self.lo, self.hi, self.val, self.shown = 0, 100, 0, 0.0
         self.t0 = time.monotonic(); self.eaten = {}
         self.mode = "ready"
@@ -516,7 +517,7 @@ class PacBar(QWidget):
 
     def paintEvent(self, _):
         p = QPainter(self); p.setRenderHint(QPainter.RenderHint.Antialiasing)
-        w, h = self.width(), self.height(); cy = h / 2; R = 13; x0, x1 = 24, w - 24
+        sc = self.sc; w, h = self.width() / sc, 50; p.scale(sc, sc); cy = h / 2; R = 13; x0, x1 = 24, w - 24
         now = time.monotonic() - self.t0
         # Spielfeld
         p.setPen(QPen(QColor(40, 60, 255, 190), 2)); p.setBrush(QColor("#0d0f17"))
@@ -738,7 +739,7 @@ class Win(QWidget):
         self.rows = {}
         for i, (key, title, desc) in enumerate(STEPS, 1):
             self.rows[key] = StepRow(i, title, desc); c.lay.addWidget(self.rows[key])
-        self.bar = PacBar(); c.lay.addWidget(self.bar)
+        self.bar = PacBar(); c.lay.addWidget(self.bar)   # Platz wird in reflow() gewählt
         self.live = make_label("", "mono", True); self.live.hide(); c.lay.addWidget(self.live)
         lrow = QHBoxLayout(); c.lay.addLayout(lrow)
         self.logbtn = QPushButton("Ablaufprotokoll anzeigen ▾"); self.logbtn.setObjectName("flat")
@@ -863,6 +864,9 @@ class Win(QWidget):
         self._wide = wide
         g = self.grid
         for cd in (self.card_set, self.card_flow, self.card_status, self.card_upd): g.removeWidget(cd)
+        self.bar.parentWidget().layout().removeWidget(self.bar)
+        if wide: self.card_upd.lay.insertWidget(self.card_upd.lay.count() - 1, self.bar)   # unten rechts, in der freien Fläche
+        else: self.card_flow.lay.insertWidget(4, self.bar)                                  # direkt unter den Schritten
         for i in range(4): g.setRowStretch(i, 0)
         for i in range(2): g.setColumnStretch(i, 0)
         if wide:
