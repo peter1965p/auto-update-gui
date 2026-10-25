@@ -10,7 +10,7 @@ from PyQt6.QtWidgets import (QAbstractButton, QApplication, QCheckBox, QComboBox
     QHBoxLayout, QLabel, QMenu, QMessageBox, QPlainTextEdit, QProgressBar, QPushButton, QScrollArea,
     QSizePolicy, QSystemTrayIcon, QTextEdit, QTimeEdit, QVBoxLayout, QWidget)
 
-VERSION = "1.2.2"
+VERSION = "1.2.3"
 REPO = "peter1965p/auto-update-gui"
 CONF = "/etc/auto-update.conf"
 DAYS = [("Montag","Mon"),("Dienstag","Tue"),("Mittwoch","Wed"),("Donnerstag","Thu"),
@@ -173,6 +173,8 @@ def parse_run(raw):
         if pm:
             if phase in r.start: r.end[phase] = dt
             if pm.group(1) == "done":
+                if phase == "aur" and not r.c["aur"].rows and not r.c["aur"].nothing and r.c["aur"].events == 0:
+                    r.events.append((dt, "aur", "ok", "✓ Im AUR sind derzeit keine Updates vorhanden"))
                 r.done = dt; phase = "done"; r.events.append((dt, "done", "phase", "■ Update beendet")); continue
             phase = pm.group(1); r.phases.append(phase); r.start[phase] = dt
             r.c.setdefault(phase, new_counter())
@@ -208,7 +210,9 @@ def parse_run(raw):
             if c.stage == "download": c.dl += 1; c.last_dl = name; ev(dt, "dl", f"⬇ {name}")
             else: ev(dt, "dl", f"⬇ {name}  (Paketdatenbank)")
             continue
-        if RX_NOTHING.search(msg): c.nothing = True; ev(dt, "ok", "✓ Nichts zu tun – alles aktuell"); continue
+        if RX_NOTHING.search(msg):
+            c.nothing = True
+            ev(dt, "ok", "✓ Im AUR sind derzeit keine Updates vorhanden" if phase == "aur" else "✓ Nichts zu tun – das System ist aktuell"); continue
         if RX_BAD.search(msg): ev(dt, "err", "✕ " + msg[:200]); continue
         if RX_WARN.search(msg): ev(dt, "warn", "⚠ " + msg[:200]); continue
         mh = RX_HOOK.match(msg)
@@ -231,12 +235,13 @@ def run_summary(r, ph):
     c = r.c[ph]
     if ph == "snapshot": return "Snapshot angelegt"
     if ph == "pacman":
-        if c.nothing and not c.inst: return "nichts zu aktualisieren"
+        if c.nothing and not c.inst: return "System ist aktuell – nichts zu aktualisieren"
         parts = [f"{n} {v}" for v, n in c.verbs.items()]
         return f"{c.inst} {'Paket' if c.inst == 1 else 'Pakete'}: " + ", ".join(parts) if parts else ""
     if ph == "aur":
+        if c.nothing and not c.rows: return "Im AUR sind derzeit keine Updates vorhanden"
         if c.rows: return f"{len(c.rows)} Paket(e): " + ", ".join(f"{n} {o}→{v}" for n, o, v in c.rows[:4]) + (" …" if len(c.rows) > 4 else "")
-        return "keine AUR-Updates gefunden"
+        return "Im AUR sind derzeit keine Updates vorhanden"
     return ""
 
 def run_activity(r, ph):
@@ -917,7 +922,7 @@ class Win(QWidget):
             if r.done: cmd[3:3] = ["--until", (r.done).strftime("%Y-%m-%d %H:%M:%S")]
             extra = sh(*cmd).stdout
             if extra.strip():
-                lines = [l for l in (raw + "\n" + extra).splitlines() if l.strip()]
+                lines = list(dict.fromkeys(l for l in (raw + "\n" + extra).splitlines() if l.strip()))   # ohne Doppelte
                 lines.sort(key=lambda l: l[:19])
                 r = parse_run("\n".join(lines))
         return r
