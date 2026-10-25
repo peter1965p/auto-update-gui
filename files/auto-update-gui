@@ -10,7 +10,7 @@ from PyQt6.QtWidgets import (QAbstractButton, QApplication, QCheckBox, QComboBox
     QHBoxLayout, QLabel, QMenu, QMessageBox, QPlainTextEdit, QProgressBar, QPushButton, QScrollArea,
     QSizePolicy, QSystemTrayIcon, QTextEdit, QTimeEdit, QVBoxLayout, QWidget)
 
-VERSION = "1.2.1"
+VERSION = "1.2.2"
 REPO = "peter1965p/auto-update-gui"
 CONF = "/etc/auto-update.conf"
 DAYS = [("Montag","Mon"),("Dienstag","Tue"),("Mittwoch","Wed"),("Donnerstag","Thu"),
@@ -236,7 +236,7 @@ def run_summary(r, ph):
         return f"{c.inst} {'Paket' if c.inst == 1 else 'Pakete'}: " + ", ".join(parts) if parts else ""
     if ph == "aur":
         if c.rows: return f"{len(c.rows)} Paket(e): " + ", ".join(f"{n} {o}→{v}" for n, o, v in c.rows[:4]) + (" …" if len(c.rows) > 4 else "")
-        return "keine AUR-Updates" if c.events else "keine Ausgabe im Journal"
+        return "keine AUR-Updates gefunden"
     return ""
 
 def run_activity(r, ph):
@@ -1008,6 +1008,7 @@ class Win(QWidget):
             self.tray.setToolTip(f"Update läuft – {PHASE_TAGS.get(cur, 'Start')}: {act}"[:120]); self.spin_tick()
         elif self.was_active:
             self.bar.hide(); self.live.hide()
+            self.was_active = False          # vor load_last(), sonst wird die Schritt-Anzeige nicht aktualisiert
             self.load_last(); self.refresh_status()
             ok = self.last[1] == "success"
             self.refresh_header(False)
