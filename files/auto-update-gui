@@ -5,12 +5,12 @@ from datetime import datetime as DT
 from types import SimpleNamespace
 from PyQt6.QtCore import (QEasingCurve, QDateTime, QLocale, QPointF, QProcess, QRectF, QSettings, Qt, QTime,
     QTimer, QVariantAnimation)
-from PyQt6.QtGui import QAction, QColor, QFont, QIcon, QPainter, QPainterPath, QPalette, QPen, QPixmap
+from PyQt6.QtGui import QAction, QColor, QFont, QIcon, QFontMetrics, QPainter, QPainterPath, QPalette, QPen, QPixmap
 from PyQt6.QtWidgets import (QAbstractButton, QApplication, QCheckBox, QComboBox, QDialog, QFrame, QGridLayout,
     QHBoxLayout, QLabel, QMenu, QMessageBox, QPlainTextEdit, QProgressBar, QPushButton, QScrollArea,
     QSizePolicy, QSystemTrayIcon, QTextEdit, QTimeEdit, QVBoxLayout, QWidget)
 
-VERSION = "1.3.1"
+VERSION = "1.3.2"
 REPO = "peter1965p/auto-update-gui"
 CONF = "/etc/auto-update.conf"
 DAYS = [("Montag","Mon"),("Dienstag","Tue"),("Mittwoch","Wed"),("Donnerstag","Thu"),
@@ -449,13 +449,21 @@ class PacBar(QWidget):
         self.setFixedHeight(50)
         self.lo, self.hi, self.val, self.shown = 0, 100, 0, 0.0
         self.t0 = time.monotonic(); self.eaten = {}
-        self.tm = QTimer(self); self.tm.setInterval(33); self.tm.timeout.connect(self._tick)
+        self.mode = "ready"
+        self.tm = QTimer(self); self.tm.setInterval(90); self.tm.timeout.connect(self._tick)
+
+    def set_mode(self, mode):
+        """'run' = Update läuft, 'ready' = bereit, 'clear' = Lauf erfolgreich, 'over' = Lauf mit Fehler."""
+        if mode == self.mode: return
+        self.mode = mode; self.tm.setInterval(33 if mode == "run" else 90)
+        if mode == "run": self.eaten.clear(); self.shown = 0.0
+        self.update()
 
     def setRange(self, lo, hi): self.lo, self.hi = lo, hi
     def setValue(self, v): self.val = v
     def indeterminate(self): return self.hi <= self.lo
     def showEvent(self, e): self.tm.start()
-    def hideEvent(self, e): self.tm.stop(); self.shown = 0.0; self.eaten.clear()
+    def hideEvent(self, e): self.tm.stop()
 
     def _tick(self):
         target = 0.0 if self.indeterminate() else min(1.0, max(0.0, (self.val - self.lo) / (self.hi - self.lo)))
@@ -486,6 +494,26 @@ class PacBar(QWidget):
             p.setBrush(QColor("#1a2cff"))
             for dx in (-4.5, 4.5): p.drawEllipse(QPointF(x + dx + look * 1.6, cy - 3), 1.8, 1.8)
 
+    def _idle(self, p, w, cy, R, lo, hi, now):
+        """Ruhebild: bereit (alles da), Level geschafft (alles gefressen) oder Game over."""
+        mode = self.mode
+        px = hi if mode == "clear" else lo if mode == "ready" else lo + (hi - lo) * .12
+        p.setPen(Qt.PenStyle.NoPen)
+        if mode != "clear":
+            p.setBrush(QColor("#f1d9a0"))
+            for x in range(int(lo), int(hi) + 1, 18):
+                if abs(x - px) > R + 2: p.drawEllipse(QPointF(x, cy), 2.2, 2.2)
+            for f, col in zip(self.FRACS, self.GHOSTS): self._ghost(p, lo + f * (hi - lo), cy, col, False, -1)
+        mh = 38 if mode == "over" else 4 + 36 * abs(math.sin(now * (3 if mode == "ready" else 10)))
+        p.setBrush(QColor("#ffd400"))
+        p.drawPie(QRectF(px - R, cy - R, 2 * R, 2 * R), int(mh * 16), int((360 - 2 * mh) * 16))
+        p.setBrush(QColor("#0d0f17")); p.drawEllipse(QPointF(px + 1.5, cy - R * .5), 1.8, 1.8)
+        txt, col = {"ready": ("READY!", "#ffd400"), "clear": ("LEVEL CLEAR", "#2ecc71"), "over": ("GAME OVER", "#ff4d4d")}[mode]
+        f = QFont("monospace"); f.setBold(True); f.setPixelSize(13); f.setLetterSpacing(QFont.SpacingType.AbsoluteSpacing, 2); p.setFont(f)
+        tw = QFontMetrics(f).horizontalAdvance(txt) + 26
+        p.setPen(Qt.PenStyle.NoPen); p.setBrush(QColor("#0d0f17")); p.drawRoundedRect(QRectF(w / 2 - tw / 2, cy - 12, tw, 24), 6, 6)
+        p.setPen(QColor(col)); p.drawText(QRectF(w / 2 - tw / 2, cy - 12, tw, 24), Qt.AlignmentFlag.AlignCenter, txt)
+
     def paintEvent(self, _):
         p = QPainter(self); p.setRenderHint(QPainter.RenderHint.Antialiasing)
         w, h = self.width(), self.height(); cy = h / 2; R = 13; x0, x1 = 24, w - 24
@@ -494,6 +522,7 @@ class PacBar(QWidget):
         p.setPen(QPen(QColor(40, 60, 255, 190), 2)); p.setBrush(QColor("#0d0f17"))
         p.drawRoundedRect(QRectF(3, 3, w - 6, h - 6), 12, 12)
         lo, hi = x0 + R, x1 - R
+        if self.mode != "run": return self._idle(p, w, cy, R, lo, hi, now)
         ind = self.indeterminate()
         if ind:
             ph = (now / 7.0) % 1.0; tri = 1 - abs(2 * ph - 1); dirn = 1 if ph < .5 else -1
@@ -709,7 +738,7 @@ class Win(QWidget):
         self.rows = {}
         for i, (key, title, desc) in enumerate(STEPS, 1):
             self.rows[key] = StepRow(i, title, desc); c.lay.addWidget(self.rows[key])
-        self.bar = PacBar(); self.bar.hide(); c.lay.addWidget(self.bar)
+        self.bar = PacBar(); c.lay.addWidget(self.bar)
         self.live = make_label("", "mono", True); self.live.hide(); c.lay.addWidget(self.live)
         lrow = QHBoxLayout(); c.lay.addLayout(lrow)
         self.logbtn = QPushButton("Ablaufprotokoll anzeigen ▾"); self.logbtn.setObjectName("flat")
@@ -967,6 +996,8 @@ class Win(QWidget):
         def times(k):
             a = r.start.get(k); b = r.end.get(k) or (r.done if r.done else None)
             return a, b
+        self.bar.set_mode("run" if running else ("over" if result not in (None, "success") and have else
+                                                 "clear" if have and result is not None else "ready"))
         if running and r is not None:
             cur = r.phases[-1] if r.phases else next((k for k in keys if enabled[k]), "pacman")
             self.flow_title.setText(f"Läuft seit {r.first:%H:%M:%S} · {fmt_dur((now - r.first).total_seconds())}" if r.first else "Läuft gerade")
@@ -1013,7 +1044,7 @@ class Win(QWidget):
         if active:
             r = self.fetch_run(); self.cur_run = r
             if not self.was_active: self.conf = load_conf(); self.refresh_header(True); self.dl_hist = []
-            self.bar.show(); self.live.show()
+            self.bar.set_mode("run"); self.live.show()
             cur = r.phases[-1] if r.phases else None
             c = r.c[cur] if cur else None
             progressing = False
@@ -1043,7 +1074,7 @@ class Win(QWidget):
             self.refresh_liveview()
             self.tray.setToolTip(f"Update läuft – {PHASE_TAGS.get(cur, 'Start')}: {act}"[:120]); self.spin_tick()
         elif self.was_active:
-            self.bar.hide(); self.live.hide()
+            self.live.hide()
             self.was_active = False          # vor load_last(), sonst wird die Schritt-Anzeige nicht aktualisiert
             self.load_last(); self.refresh_status()
             ok = self.last[1] == "success"

@@ -28,7 +28,7 @@ Man sieht jederzeit, **was** das Tool gerade tut – und es ersetzt das Cachy-Up
   („Lade herunter 12/20 · mesa“, „AUR: docker-desktop · Lese pkg Liste …“) und „letzte Ausgabe vor …“
 - **Ablaufprotokoll** mit Uhrzeit pro Ereignis: was wann heruntergeladen, installiert und gebaut wurde (pacman und AUR getrennt); Standardansicht ist die Rohausgabe, umschaltbar auf ausgewertete Ereignisse (Auswahl wird gemerkt)
 - **Download-Fortschritt in Echtzeit** (auch wenn pacman nichts ausgibt): MiB, Prozent, Geschwindigkeit, Restzeit und die gerade ladenden Pakete – gelesen aus dem pacman-Cache
-- **Pac-Man** als Fortschrittsanzeige: frisst Punkte und Geister, jagt sie bei unbestimmter Dauer 👾
+- **Pac-Man** als Fortschrittsanzeige 👾: frisst Punkte und Geister, jagt sie bei unbestimmter Dauer; im Leerlauf „READY!“, nach dem Lauf „LEVEL CLEAR“ oder bei Fehlern „GAME OVER“
 - **Systray** mit Update-Zähler als Badge und Benachrichtigung; Check alle 3 Stunden
 - Responsives Layout: breit = Einstellungen links, Status und verfügbare Updates rechts, Ablauf darunter; schmal = eine Spalte
 - Animierte Switches, Karten-Layout; **Einstellungen** (⚙ im Fenster oder Tray-Menü): Farbschema hell/dunkel/System,
