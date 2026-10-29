@@ -116,6 +116,30 @@ STAGES = [("sync", r"Paketdatenbanken werden synchronisiert|Synchronizing packag
           ("post", r"Post-transaction-Hooks|post-transaction hooks", "Post-Transaction-Hooks ausführen")]
 STAGES = [(k, re.compile(rx, re.I), t) for k, rx, t in STAGES]
 
+SEV_RANK = {"critical": 0, "high": 1, "medium": 2, "low": 3}
+SEV_DE = {"critical": "kritisch", "high": "hoch", "medium": "mittel", "low": "niedrig"}
+
+def parse_audit(out):
+    """Ausgabe von: arch-audit -f '%n|%s|%v|%c|%t'  ->  Liste von Dicts (Fix verfügbar zuerst, dann nach Schwere)."""
+    res = []
+    for line in (out or "").splitlines():
+        f = [x.strip() for x in line.split("|")]
+        if len(f) < 4 or not f[0]: continue
+        sev = next((k for k in SEV_RANK if k in f[1].lower()), "")
+        res.append(dict(name=f[0], sev=sev, fix=f[2], cves=[c for c in re.split(r"[,\s]+", f[3]) if c], type=f[4] if len(f) > 4 else ""))
+    res.sort(key=lambda a: (not a["fix"], SEV_RANK.get(a["sev"], 9), a["name"]))
+    return res
+
+def audit_text(items):
+    if not items: return "Sicherheit (arch-audit): ✓ keine bekannten Lücken"
+    fixable = sum(1 for a in items if a["fix"])
+    head = f"Sicherheit (arch-audit): ⚠ {len(items)} {'Paket' if len(items) == 1 else 'Pakete'} mit bekannten Lücken · {fixable} mit Fix verfügbar"
+    rows = []
+    for a in items[:5]:
+        cve = ", ".join(a["cves"][:2]) + (f" +{len(a['cves']) - 2}" if len(a["cves"]) > 2 else "")
+        rows.append(f"   {a['name']} · {SEV_DE.get(a['sev'], 'unbekannt')} · " + (f"Fix {a['fix']}" if a["fix"] else "noch kein Fix") + (f" · {cve}" if cve else ""))
+    return head + "\n" + "\n".join(rows) + ("\n   …" if len(items) > 5 else "")
+
 def fmt_dur(secs):
     secs = max(0, int(secs))
     if secs < 60: return f"{secs} s"
@@ -613,6 +637,7 @@ class SettingsDialog(QDialog):
         self.interval_box.currentIndexChanged.connect(lambda *_: (cfg.setValue("interval", self.interval_box.currentData()), win.apply_cfg()))
         c.lay.addWidget(separator())
         for key, default, title, desc in (
+                ("audit", True, "Auf Sicherheitslücken prüfen", "Gleicht installierte Pakete mit der Arch-Sicherheitsdatenbank ab (arch-audit, braucht Internet)."),
                 ("notify", True, "Benachrichtigungen anzeigen", "Hinweis im Systray bei neuen Updates und nach einem Lauf."),
                 ("selfcheck", True, "Nach neuen Tool-Versionen suchen", "Fragt alle 12 Stunden GitHub nach einem neuen Release dieses Tools.")):
             r = OptionRow(title, desc); r.toggle.setChecked(flag(key, default))
@@ -768,7 +793,8 @@ class Win(QWidget):
         self.card_upd = c = Card("Verfügbare Updates")
         self.repolabel = make_label("System (pacman): nicht geprüft", wrap=True)
         self.aurlabel = make_label("AUR: nicht geprüft", wrap=True)
-        c.lay.addWidget(self.repolabel); c.lay.addWidget(self.aurlabel)
+        self.auditlabel = make_label("Sicherheit (arch-audit): nicht geprüft", wrap=True); self.audit = []
+        c.lay.addWidget(self.repolabel); c.lay.addWidget(self.aurlabel); c.lay.addWidget(self.auditlabel)
         arow = QHBoxLayout(); c.lay.addLayout(arow)
         self.checkbtn = QPushButton("Jetzt prüfen"); self.checkbtn.clicked.connect(self.check_updates); arow.addWidget(self.checkbtn)
         self.aurbtn = QPushButton("AUR im Terminal installieren"); self.aurbtn.clicked.connect(self.install_aur)
@@ -832,6 +858,7 @@ class Win(QWidget):
         if flag("notify"): self.tray.showMessage(title, text, icon)
 
     def apply_cfg(self):
+        self.auditlabel.setVisible(flag("audit", True))
         self.checker.start(int(cfg.value("interval", 3)) * 3600 * 1000)
         if flag("selfcheck"): self.vchecker.start(12 * 3600 * 1000)
         else: self.vchecker.stop()
@@ -1123,29 +1150,44 @@ class Win(QWidget):
         if self.procs: return
         self.checkbtn.setEnabled(False); self.checkbtn.setText("Prüfe …")
         self.repolabel.setText("System (pacman): prüfe …"); self.aurlabel.setText("AUR: prüfe …")
-        for name, cmd, args in (("repo", "checkupdates", []), ("aur", "paru", ["-Qua"])):
+        checks = [("repo", "checkupdates", []), ("aur", "paru", ["-Qua"])]
+        if flag("audit", True):
+            self.auditlabel.setText("Sicherheit (arch-audit): prüfe …")
+            checks.append(("audit", "arch-audit", ["-f", "%n|%s|%v|%c|%t"]))
+        for name, cmd, args in checks:
             if not shutil.which(cmd):
                 self.done_check(name, None, None); continue
             p = QProcess(self); self.procs[name] = p
-            p.finished.connect(lambda code, _s, n=name: self.done_check(n, code, bytes(self.procs[n].readAllStandardOutput()).decode()))
+            p.finished.connect(lambda code, _s, n=name: self.done_check(n, code, bytes(self.procs[n].readAllStandardOutput()).decode(),
+                                                                       bytes(self.procs[n].readAllStandardError()).decode()))
             p.start(cmd, args)
 
-    def done_check(self, name, code, out):
-        self.procs.pop(name, None)
-        lines = [l for l in (out or "").splitlines() if l.strip()]
-        label = self.repolabel if name == "repo" else self.aurlabel
-        title = "System (pacman)" if name == "repo" else "AUR"
+    def done_audit(self, code, out, err):
         if code is None:
-            label.setText(f"{title}: Werkzeug fehlt ({'pacman-contrib' if name == 'repo' else 'paru'})")
-        elif code not in (0, 1, 2) or (name == "repo" and code == 1):
-            label.setText(f"{title}: Prüfung fehlgeschlagen")
-        elif lines:
-            label.setText(f"{title}: {len(lines)} verfügbar\n" + "\n".join(f"   {l}" for l in lines[:8]) + ("\n   …" if len(lines) > 8 else ""))
+            self.audit = []; self.auditlabel.setText("Sicherheit: arch-audit fehlt  →  sudo pacman -S arch-audit"); return
+        items = parse_audit(out)
+        if code not in (0, 1) or (not items and err.strip()):
+            self.audit = []; self.auditlabel.setText("Sicherheit (arch-audit): Prüfung fehlgeschlagen – keine Verbindung zu security.archlinux.org?"); return
+        self.audit = items; self.auditlabel.setText(audit_text(items))
+
+    def done_check(self, name, code, out, err=""):
+        self.procs.pop(name, None)
+        if name == "audit": self.done_audit(code, out, err)
         else:
-            label.setText(f"{title}: ✓ alles aktuell")
-        if code in (0, 2): self.counts[name] = len(lines)
-        else: self.counts.pop(name, None)
-        if name == "aur": self.aurbtn.setEnabled(bool(lines))
+            lines = [l for l in (out or "").splitlines() if l.strip()]
+            label = self.repolabel if name == "repo" else self.aurlabel
+            title = "System (pacman)" if name == "repo" else "AUR"
+            if code is None:
+                label.setText(f"{title}: Werkzeug fehlt ({'pacman-contrib' if name == 'repo' else 'paru'})")
+            elif code not in (0, 1, 2) or (name == "repo" and code == 1):
+                label.setText(f"{title}: Prüfung fehlgeschlagen")
+            elif lines:
+                label.setText(f"{title}: {len(lines)} verfügbar\n" + "\n".join(f"   {l}" for l in lines[:8]) + ("\n   …" if len(lines) > 8 else ""))
+            else:
+                label.setText(f"{title}: ✓ alles aktuell")
+            if code in (0, 2): self.counts[name] = len(lines)
+            else: self.counts.pop(name, None)
+            if name == "aur": self.aurbtn.setEnabled(bool(lines))
         if not self.procs:
             self.checkbtn.setEnabled(True); self.checkbtn.setText("Jetzt prüfen")
             self.update_tray_badge()
@@ -1168,6 +1210,17 @@ class Win(QWidget):
         else:
             self.tray.setIcon(base); self.tray.setToolTip("Automatische Updates – alles aktuell")
         self.notified = n
+        fixable = [a for a in self.audit if a["fix"]]
+        if fixable:
+            self.tray.setToolTip(self.tray.toolTip() + f"\n⚠ {len(fixable)} Paket(e) mit Sicherheitslücke und verfügbarem Fix")
+            key = ",".join(a["name"] for a in fixable)
+            if key != getattr(self, "notified_sec", "") and not self.was_active:
+                top = fixable[0]
+                self.notify("Sicherheitslücken", f"{len(fixable)} Paket(e) mit bekannter Lücke haben ein Update, z. B. {top['name']} "
+                            f"({SEV_DE.get(top['sev'], 'unbekannt')}). Klick zum Öffnen.", QSystemTrayIcon.MessageIcon.Warning)
+            self.notified_sec = key
+        else:
+            self.notified_sec = ""
 
     # ---- Selbst-Update des Tools (GitHub-Releases)
     def check_self_update(self, force=False):
