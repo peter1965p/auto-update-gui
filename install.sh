@@ -18,7 +18,7 @@ systemctl daemon-reload
 
 # Cachy-Update (arch-update) ersetzen: Tray-Applet und Prüf-Timer des Benutzers abschalten
 U=${SUDO_USER:-}
-if [ -n "$U" ] && [ "$U" != root ]; then
+if [ -n "$U" ] && [ "$U" != root ] && [ -f /etc/xdg/autostart/arch-update-tray.desktop ]; then
     H=$(getent passwd "$U" | cut -d: -f6)
     install -d -o "$U" -m 755 "$H/.config/autostart"
     printf '[Desktop Entry]\nType=Application\nName=Cachy-Update Systray Applet\nHidden=true\n' > "$H/.config/autostart/arch-update-tray.desktop"

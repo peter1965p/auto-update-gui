@@ -1,6 +1,6 @@
 # 🔄 auto-update-gui
 
-Moderne Qt6-Oberfläche für automatische Systemupdates unter Arch Linux / CachyOS.
+Moderne Qt6-Oberfläche für automatische Systemupdates unter Arch Linux und Arch-Derivaten (getestet auf CachyOS).
 Man sieht jederzeit, **was** das Tool gerade tut – und es ersetzt das Cachy-Update-Tray-Applet.
 
 <p align="center">
@@ -27,6 +27,7 @@ Man sieht jederzeit, **was** das Tool gerade tut – und es ersetzt das Cachy-Up
 - **Ablaufanzeige** Snapshot → pacman → AUR mit Start-/Endzeit und Dauer pro Schritt, aktueller Tätigkeit
   („Lade herunter 12/20 · mesa“, „AUR: docker-desktop · Lese pkg Liste …“) und „letzte Ausgabe vor …“
 - **Ablaufprotokoll** mit Uhrzeit pro Ereignis: was wann heruntergeladen, installiert und gebaut wurde (pacman und AUR getrennt); Standardansicht ist die Rohausgabe, umschaltbar auf ausgewertete Ereignisse (Auswahl wird gemerkt)
+- **Systemerkennung** (Arch, CachyOS, EndeavourOS, Garuda, Manjaro, BlackArch, Artix): Dialog „System & Quellen“ mit erkannter Distribution, Repos, CPU-Stufe (x86-64-v2/v3/v4) und Hinweisen zu Zusatzquellen (CachyOS-Repos, Chaotic-AUR, BlackArch) – nur Info und Anleitung, es wird nichts automatisch eingetragen. Das Mirror-Werkzeug passt sich an (cachyos-rate-mirrors oder reflector, Manjaro: keins)
 - **Mirrors**: Status (zuletzt bewertet, nächste automatische Bewertung des CachyOS-Timers) und Knopf „Mirrors jetzt aktualisieren“ (nutzt `cachyos-rate-mirrors`, Sicherung als `*-backup`)
 - **Sicherheitsprüfung** mit `arch-audit`: zeigt installierte Pakete mit bekannten Lücken (CVE), Schweregrad und ob ein Fix verfügbar ist; Hinweis im Tray bei neuen Fixes (abschaltbar)
 - **Download-Fortschritt in Echtzeit** (auch wenn pacman nichts ausgibt): MiB, Prozent, Geschwindigkeit, Restzeit und die gerade ladenden Pakete – gelesen aus dem pacman-Cache

@@ -10,7 +10,7 @@ from PyQt6.QtWidgets import (QAbstractButton, QApplication, QCheckBox, QComboBox
     QHBoxLayout, QLabel, QMenu, QMessageBox, QPlainTextEdit, QProgressBar, QPushButton, QScrollArea,
     QSizePolicy, QSystemTrayIcon, QTextEdit, QTimeEdit, QVBoxLayout, QWidget)
 
-VERSION = "2.0.0"
+VERSION = "2.1.0"
 REPO = "peter1965p/auto-update-gui"
 CONF = "/etc/auto-update.conf"
 DAYS = [("Montag","Mon"),("Dienstag","Tue"),("Mittwoch","Wed"),("Donnerstag","Thu"),
@@ -87,6 +87,78 @@ def fmt_delta(secs):
     if h: return f"in {h} Std. {m} Min."
     return f"in {max(m, 1)} Min."
 
+
+
+# ---------------------------------------------------------------- System erkennen
+DISTROS = {
+    "cachyos": ("CachyOS", "Arch-Basis mit für x86-64-v3/v4 optimierten Repos, eigenem Kernel und eigenem Mirror-Dienst."),
+    "arch": ("Arch Linux", "Das Original: rollende Releases, kein Zusatz-Repo. Mirror-Pflege über reflector."),
+    "endeavouros": ("EndeavourOS", "Fast reines Arch mit einem kleinen eigenen Repo. Mirror-Pflege über reflector."),
+    "garuda": ("Garuda Linux", "Arch-Basis mit Btrfs-/Snapper-Voreinstellung und vorkonfiguriertem Chaotic-AUR."),
+    "manjaro": ("Manjaro", "Eigene, verzögerte Repos. Nicht mit Arch-Repos oder dem AUR mischen – die AUR-Automatik ist hier riskant."),
+    "blackarch": ("BlackArch", "Arch mit tausenden Sicherheits- und Pentest-Werkzeugen."),
+    "artix": ("Artix Linux", "Arch ohne systemd (OpenRC/runit/s6) – dieses Tool braucht systemd und läuft hier nicht."),
+}
+SOURCES = [  # (Schlüssel, Titel, Beschreibung, Link)
+    ("cachyos", "CachyOS-Repos & Kernel", "Für x86-64-v3/v4 optimierte Pakete, CachyOS-Kernel (BORE-Scheduler), eigene Mirror-Pflege.", "https://wiki.cachyos.org/"),
+    ("chaotic", "Chaotic-AUR", "Fertig gebaute AUR-Pakete: spart Compile-Zeit, vor allem bei großen Paketen (z. B. docker-desktop oder Browser).", "https://aur.chaotic.cx/"),
+    ("blackarch", "BlackArch-Repo", "Sammlung von Sicherheits- und Pentest-Werkzeugen, nur für autorisierte Tests. Einzelne Pakete installieren, nicht die ganze Gruppe.", "https://blackarch.org/downloads.html"),
+]
+
+def read_os_release(path="/etc/os-release"):
+    d = {}
+    try:
+        for line in open(path):
+            if "=" in line: k, v = line.strip().split("=", 1); d[k] = v.strip('"')
+    except OSError:
+        pass
+    return d
+
+def cpu_level(flags=None):
+    """x86-64-Mikroarchitektur-Stufe (1–4) aus den CPU-Flags."""
+    if flags is None:
+        try: flags = set(next(l for l in open("/proc/cpuinfo") if l.startswith("flags")).split(":", 1)[1].split())
+        except (OSError, StopIteration): flags = set()
+    v2 = {"cx16", "popcnt", "ssse3", "sse4_2"}
+    v3 = v2 | {"avx", "avx2", "bmi1", "bmi2", "f16c", "fma", "abm", "movbe", "xsave"}
+    v4 = v3 | {"avx512f", "avx512bw", "avx512cd", "avx512dq", "avx512vl"}
+    return 4 if v4 <= flags else 3 if v3 <= flags else 2 if v2 <= flags else 1
+
+def detect_system(osr=None, repos=None, flags=None, has_pacman=None):
+    osr = read_os_release() if osr is None else osr
+    repos = sh("pacman-conf", "--repo-list").stdout.split() if repos is None else repos
+    ident = osr.get("ID", "").lower(); like = osr.get("ID_LIKE", "").lower().split()
+    kind = ident if ident in DISTROS else ("arch" if "arch" in like else "other")
+    if kind == "arch" and ident not in ("", "arch"): kind = "other"
+    if not (shutil.which("pacman") if has_pacman is None else has_pacman): kind = "foreign"
+    has = {"cachyos": any(r.startswith("cachyos") for r in repos), "chaotic": "chaotic-aur" in repos,
+           "blackarch": "blackarch" in repos, "multilib": "multilib" in repos}
+    return SimpleNamespace(kind=kind, id=ident, name=osr.get("PRETTY_NAME") or osr.get("NAME") or "Unbekannt",
+                           repos=repos, has=has, cpu=cpu_level(flags))
+
+def mirror_backend(kind):
+    """(Dienst, Timer, Name) zum Neubewerten der Mirrors – passend zum System; None, wenn es keinen sicheren gibt."""
+    if kind == "manjaro": return None            # Manjaro nutzt pacman-mirrors; Arch-Mirrors würden es zerschießen
+    cands = [("cachyos-rate-mirrors.service", "cachyos-rate-mirrors.timer", "cachyos-rate-mirrors"),
+             ("reflector.service", "reflector.timer", "reflector")]
+    if kind != "cachyos": cands.reverse()
+    for svc, tim, name in cands:
+        if sh("systemctl", "cat", svc).returncode == 0: return svc, tim, name
+    return None
+
+def source_state(sysi, key):
+    """('ok'|'info'|'warn'|'no', Text) zu einer möglichen Zusatzquelle für dieses System."""
+    if sysi.kind == "foreign": return "no", "⛔ kein Arch-System (kein pacman)"
+    if sysi.kind == "manjaro": return "no", "⛔ nicht mit Manjaro mischen – eigene Repos, bricht leicht"
+    if sysi.kind == "artix": return "no", "⛔ Artix hat eigene Repos"
+    if key == "cachyos":
+        if sysi.has["cachyos"] or sysi.kind == "cachyos": return "ok", "✓ eingerichtet"
+        lvl = sysi.cpu
+        return ("info", f"nicht eingerichtet · deine CPU kann x86-64-v{min(lvl, 4)} → v3-Repo möglich") if lvl >= 3 else \
+               ("warn", f"nicht eingerichtet · deine CPU kann nur x86-64-v{lvl} → optimierte v3-Pakete laufen nicht")
+    if key == "chaotic": return ("ok", "✓ eingerichtet") if sysi.has["chaotic"] else ("info", "nicht eingerichtet")
+    if key == "blackarch": return ("ok", "✓ eingerichtet") if sysi.has["blackarch"] or sysi.kind == "blackarch" else ("info", "nicht eingerichtet")
+    return "info", ""
 
 # ---------------------------------------------------------------- Lauf-Protokoll auswerten
 LINE = re.compile(r"^(\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d)\S*\s+\S+\s+[^\s\[:]+(?:\[\d+\])?:\s?(.*)$")
@@ -613,6 +685,53 @@ class StepRow(QWidget):
         self.detail.setText(detail); self.detail.setVisible(bool(detail)); set_state(self.detail, state)
         self.setEnabled(state != "off")
 
+class SystemDialog(QDialog):
+    """Zeigt das erkannte System, aktive Repos und mögliche Zusatzquellen (nur Info, trägt nichts automatisch ein)."""
+    def __init__(self, win):
+        super().__init__(win)
+        si = win.sys
+        self.setObjectName("root"); self.setWindowTitle("System & Quellen"); self.resize(660, 720)
+        outer = QVBoxLayout(self); outer.setContentsMargins(0, 0, 0, 0)
+        sc = QScrollArea(); sc.setWidgetResizable(True); sc.setFrameShape(QFrame.Shape.NoFrame); outer.addWidget(sc)
+        body = QWidget(); sc.setWidget(body)
+        lay = QVBoxLayout(body); lay.setContentsMargins(20, 18, 20, 16); lay.setSpacing(14)
+        lay.addWidget(make_label("System & Quellen", "h1"))
+
+        nm, desc = DISTROS.get(si.kind, (si.name, "Kein Arch-System erkannt – dieses Tool braucht pacman und systemd." if si.kind == "foreign"
+                                         else "Unbekanntes Arch-Derivat – das Tool läuft auf Arch-Basis (pacman)."))
+        c = Card("Dein System"); lay.addWidget(c)
+        c.lay.addWidget(make_label(f"{si.name}  ·  erkannt als: {nm}", "rowTitle"))
+        c.lay.addWidget(make_label(desc, "desc", True))
+        g = QGridLayout(); g.setHorizontalSpacing(14); g.setVerticalSpacing(6); g.setColumnStretch(1, 1); c.lay.addLayout(g)
+        mb = win.mir
+        rows = [("Kernel", os.uname().release), ("Repositories", ", ".join(si.repos) or "–"),
+                ("CPU-Stufe", f"x86-64-v{si.cpu}" + ("  (v3-Pakete möglich)" if si.cpu >= 3 else "  (v3-Pakete laufen nicht)")),
+                ("Mirror-Werkzeug", mb[2] if mb else "keines gefunden")]
+        for i, (k, v) in enumerate(rows):
+            g.addWidget(make_label(k, "muted"), i, 0, Qt.AlignmentFlag.AlignTop); g.addWidget(make_label(v, wrap=True), i, 1)
+
+        c = Card("Was sich dazu nutzen lässt"); lay.addWidget(c)
+        c.lay.addWidget(make_label("Zusatzquellen sind optional. Jede fremde Quelle vergrößert die Angriffsfläche: nur einrichten, wenn "
+                                   "du sie brauchst und nur nach der offiziellen Anleitung. Das Tool trägt nichts automatisch ein.", "desc", True))
+        for key, title, text, url in SOURCES:
+            c.lay.addWidget(separator())
+            st, label = source_state(si, key)
+            c.lay.addWidget(make_label(title, "rowTitle")); c.lay.addWidget(make_label(text, "desc", True))
+            lb = make_label(label, "detail", True); set_state(lb, {"ok": "done", "warn": "failed", "no": "failed"}.get(st, "idle"))
+            c.lay.addWidget(lb)
+            if st != "no":
+                b = QPushButton("Anleitung öffnen"); b.clicked.connect(lambda _, u=url: subprocess.Popen(["xdg-open", u]))
+                c.lay.addWidget(b, 0, Qt.AlignmentFlag.AlignLeft)
+
+        c = Card("Wechsel zu einem anderen Arch-System"); lay.addWidget(c)
+        c.lay.addWidget(make_label("Alle diese Systeme teilen pacman, PKGBUILDs und das AUR. Ein Umbau im laufenden Betrieb ist aber riskant: "
+                                   "eine Neuinstallation ist fast immer sauberer.", "desc", True))
+        for k, (n, d) in DISTROS.items():
+            if k == si.kind: continue
+            c.lay.addWidget(make_label(f"<b>{n}</b> – {d}", wrap=True))
+        row = QHBoxLayout(); lay.addLayout(row); row.addStretch()
+        b = QPushButton("Fertig"); b.setObjectName("primary"); b.clicked.connect(self.accept); row.addWidget(b)
+
 class SettingsDialog(QDialog):
     def __init__(self, win):
         super().__init__(win)
@@ -660,6 +779,7 @@ class SettingsDialog(QDialog):
         link = make_label(f'<a href="https://github.com/{REPO}" style="color:{theme["accent"]}">github.com/{REPO}</a>')
         link.setOpenExternalLinks(True); c.lay.addWidget(link)
         row = QHBoxLayout(); c.lay.addLayout(row)
+        sb_ = QPushButton("System & Quellen …"); sb_.clicked.connect(win.open_system); row.addWidget(sb_)
         self.chk_btn = QPushButton("Jetzt nach Tool-Update suchen"); self.chk_btn.clicked.connect(self.check_tool)
         row.addWidget(self.chk_btn)
         self.inst_btn = QPushButton("Jetzt installieren"); self.inst_btn.setObjectName("primary"); self.inst_btn.hide()
@@ -798,12 +918,17 @@ class Win(QWidget):
         sg.addWidget(make_label("Letzter Lauf", "muted"), 1, 0, Qt.AlignmentFlag.AlignTop); sg.addWidget(self.st_last, 1, 1)
         self.st_ver = make_label(f"{VERSION}", wrap=True)
         sg.addWidget(make_label("Tool-Version", "muted"), 2, 0, Qt.AlignmentFlag.AlignTop); sg.addWidget(self.st_ver, 2, 1)
+        self.sys = detect_system(); self.mir = mirror_backend(self.sys.kind)
+        self.st_sys = make_label(f"{self.sys.name}", wrap=True)
+        sysbtn = QPushButton("Details & Vorschläge"); sysbtn.setObjectName("flat"); sysbtn.clicked.connect(self.open_system)
+        sg.addWidget(make_label("System", "muted"), 3, 0, Qt.AlignmentFlag.AlignTop)
+        sgs = QHBoxLayout(); sgs.addWidget(self.st_sys); sgs.addWidget(sysbtn); sgs.addStretch(); sg.addLayout(sgs, 3, 1)
         self.st_mir = make_label("–", wrap=True)
-        sg.addWidget(make_label("Mirrors", "muted"), 3, 0, Qt.AlignmentFlag.AlignTop); sg.addWidget(self.st_mir, 3, 1)
+        sg.addWidget(make_label("Mirrors", "muted"), 4, 0, Qt.AlignmentFlag.AlignTop); sg.addWidget(self.st_mir, 4, 1)
         self.mirbtn = QPushButton("Mirrors jetzt aktualisieren"); self.mirbtn.clicked.connect(self.mirrors_now)
-        self.mirbtn.setToolTip("Bewertet die schnellsten Arch- und CachyOS-Mirrors neu (cachyos-rate-mirrors, dauert 1–2 Minuten).\n"
+        self.mirbtn.setToolTip("Bewertet die schnellsten Mirrors neu (je nach System cachyos-rate-mirrors oder reflector, dauert 1–2 Minuten).\n"
                                "Die alten Listen bleiben als *-backup in /etc/pacman.d erhalten.")
-        sg.addWidget(self.mirbtn, 4, 1, Qt.AlignmentFlag.AlignLeft)
+        sg.addWidget(self.mirbtn, 5, 1, Qt.AlignmentFlag.AlignLeft)
         sg.setColumnStretch(1, 1); c.lay.addStretch()
 
         # Karte: Verfügbare Updates
@@ -879,6 +1004,9 @@ class Win(QWidget):
         self.checker.start(int(cfg.value("interval", 3)) * 3600 * 1000)
         if flag("selfcheck"): self.vchecker.start(12 * 3600 * 1000)
         else: self.vchecker.stop()
+
+    def open_system(self):
+        SystemDialog(self).exec()
 
     def open_settings(self):
         SettingsDialog(self).exec()
@@ -1037,30 +1165,38 @@ class Win(QWidget):
         return r
 
     def refresh_mirrors(self):
-        """Mirror-Stand: Alter der Mirrorlist und nächste automatische Bewertung (CachyOS-Timer)."""
-        try: age = (time.time() - os.path.getmtime("/etc/pacman.d/mirrorlist")) / 86400; when = DT.fromtimestamp(os.path.getmtime("/etc/pacman.d/mirrorlist"))
+        """Mirror-Stand: Alter der Mirrorlist und nächste automatische Bewertung (Timer des Mirror-Werkzeugs)."""
+        if not self.mir:
+            self.st_mir.setText("kein Mirror-Dienst gefunden" + (" (Manjaro: pacman-mirrors nutzen)" if self.sys.kind == "manjaro"
+                                else " – z. B. 'sudo pacman -S reflector'"))
+            self.mirbtn.setEnabled(False); return
+        svc, tim, name = self.mir
+        try: mt = os.path.getmtime("/etc/pacman.d/mirrorlist"); age = (time.time() - mt) / 86400; when = DT.fromtimestamp(mt)
         except OSError: self.st_mir.setText("keine Mirrorlist gefunden"); self.mirbtn.setEnabled(False); return
         if self.mir_running: self.st_mir.setText("wird gerade neu bewertet …"); return
         days = int(age)
         txt = f"zuletzt bewertet: {when:%d.%m.%Y %H:%M} ({'heute' if days == 0 else 'vor 1 Tag' if days == 1 else f'vor {days} Tagen'})"
-        if sh("systemctl", "is-enabled", "cachyos-rate-mirrors.timer").stdout.strip() == "enabled":
-            nxt = parse_ts(sh("systemctl", "show", "cachyos-rate-mirrors.timer", "-p", "NextElapseUSecRealtime", "--value").stdout)
-            txt += f"\nautomatisch wieder: {nxt.toString('dd.MM.yyyy')}" if nxt else "\nautomatische Bewertung aktiv (CachyOS-Timer)"
+        if sh("systemctl", "is-enabled", tim).stdout.strip() == "enabled":
+            nxt = parse_ts(sh("systemctl", "show", tim, "-p", "NextElapseUSecRealtime", "--value").stdout)
+            txt += f"\nautomatisch wieder: {nxt.toString('dd.MM.yyyy')}" if nxt else f"\nautomatische Bewertung aktiv ({name})"
         else:
             txt += "\nautomatische Bewertung ist aus" + (" – Mirrors sind veraltet" if days > 45 else "")
         self.st_mir.setText(txt); self.mirbtn.setEnabled(True)
 
     def mirrors_now(self):
-        if self.mir_running: return
-        if QMessageBox.question(self, "Mirrors aktualisieren", "Die schnellsten Arch- und CachyOS-Mirrors neu bewerten?\n\n"
-                                "Das dauert ein bis zwei Minuten. Die bisherigen Listen bleiben als *-backup in /etc/pacman.d erhalten.") \
+        if self.mir_running or not self.mir: return
+        svc, tim, name = self.mir
+        extra = "" if name == "cachyos-rate-mirrors" else "\n\nHinweis: reflector überschreibt die Mirrorlist; ich lege vorher eine Sicherung mirrorlist-backup an."
+        if QMessageBox.question(self, "Mirrors aktualisieren", f"Die schnellsten Mirrors mit {name} neu bewerten?\n\n"
+                                f"Das dauert ein bis zwei Minuten. Die bisherigen Listen bleiben als *-backup in /etc/pacman.d erhalten.{extra}") \
                 != QMessageBox.StandardButton.Yes: return
-        r = sh("pkexec", "/usr/bin/systemctl", "start", "--no-block", "cachyos-rate-mirrors.service")
+        if name == "cachyos-rate-mirrors": r = sh("pkexec", "/usr/bin/systemctl", "start", "--no-block", svc)
+        else: r = sh("pkexec", "/bin/sh", "-c", f"cp -a /etc/pacman.d/mirrorlist /etc/pacman.d/mirrorlist-backup && /usr/bin/systemctl start --no-block {svc}")
         if r.returncode: QMessageBox.warning(self, "Fehler", r.stderr or "Abgebrochen"); return
         self.mir_running = True; self.mirbtn.setEnabled(False); self.mirbtn.setText("Bewerte Mirrors …"); self.refresh_mirrors()
 
     def mirrors_finished(self):
-        res = sh("systemctl", "show", "cachyos-rate-mirrors.service", "-p", "Result", "--value").stdout.strip()
+        res = sh("systemctl", "show", self.mir[0], "-p", "Result", "--value").stdout.strip()
         self.mir_running = False; self.mirbtn.setText("Mirrors jetzt aktualisieren"); self.refresh_mirrors()
         ok = res == "success"
         self.flash("✓ Mirrors aktualisiert" if ok else f"✕ Mirror-Bewertung fehlgeschlagen ({res})", 8000)
@@ -1120,7 +1256,7 @@ class Win(QWidget):
             self.render_steps(False, r, res); self.refresh_liveview()
 
     def poll(self, force=False):
-        if self.mir_running and sh("systemctl", "is-active", "cachyos-rate-mirrors.service").stdout.strip() not in ("active", "activating"):
+        if self.mir_running and sh("systemctl", "is-active", self.mir[0]).stdout.strip() not in ("active", "activating"):
             self.mirrors_finished()
         active = sh("systemctl", "is-active", "auto-update.service").stdout.strip() in ("active", "activating")
         if active:
