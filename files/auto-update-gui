@@ -10,7 +10,7 @@ from PyQt6.QtWidgets import (QAbstractButton, QApplication, QCheckBox, QComboBox
     QHBoxLayout, QLabel, QMenu, QMessageBox, QPlainTextEdit, QProgressBar, QPushButton, QScrollArea,
     QSizePolicy, QSystemTrayIcon, QTextEdit, QTimeEdit, QVBoxLayout, QWidget)
 
-VERSION = "2.1.0"
+VERSION = "2.2.0"
 REPO = "peter1965p/auto-update-gui"
 CONF = "/etc/auto-update.conf"
 DAYS = [("Montag","Mon"),("Dienstag","Tue"),("Mittwoch","Wed"),("Donnerstag","Thu"),
@@ -779,7 +779,7 @@ class SettingsDialog(QDialog):
         link = make_label(f'<a href="https://github.com/{REPO}" style="color:{theme["accent"]}">github.com/{REPO}</a>')
         link.setOpenExternalLinks(True); c.lay.addWidget(link)
         row = QHBoxLayout(); c.lay.addLayout(row)
-        sb_ = QPushButton("System & Quellen …"); sb_.clicked.connect(win.open_system); row.addWidget(sb_)
+        sb_ = QPushButton("System && Quellen …"); sb_.clicked.connect(win.open_system); row.addWidget(sb_)
         self.chk_btn = QPushButton("Jetzt nach Tool-Update suchen"); self.chk_btn.clicked.connect(self.check_tool)
         row.addWidget(self.chk_btn)
         self.inst_btn = QPushButton("Jetzt installieren"); self.inst_btn.setObjectName("primary"); self.inst_btn.hide()
@@ -905,7 +905,8 @@ class Win(QWidget):
         self.rawbtn.setChecked(flag("rawview", True))      # Standard: Rohausgabe, Auswahl wird gemerkt
         self.rawbtn.toggled.connect(lambda on: (cfg.setValue("rawview", on), self.refresh_liveview()))
         lrow.addWidget(self.rawbtn); lrow.addStretch()
-        self.liveview = QTextEdit(); self.liveview.setReadOnly(True); self.liveview.setFixedHeight(260)
+        self.liveview = QTextEdit(); self.liveview.setReadOnly(True); self.liveview.setMinimumHeight(200)
+        self.liveview.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)   # füllt freie Höhe
         self.liveview.setFont(QFont("monospace", 9)); self.liveview.hide(); c.lay.addWidget(self.liveview)
         self.cur_run = None; self.dl_hist = []; self._live_text = ""; self._spin = 0
         self.spinner = QTimer(self); self.spinner.timeout.connect(self.spin_tick); self.spinner.start(110)
@@ -920,7 +921,7 @@ class Win(QWidget):
         sg.addWidget(make_label("Tool-Version", "muted"), 2, 0, Qt.AlignmentFlag.AlignTop); sg.addWidget(self.st_ver, 2, 1)
         self.sys = detect_system(); self.mir = mirror_backend(self.sys.kind)
         self.st_sys = make_label(f"{self.sys.name}", wrap=True)
-        sysbtn = QPushButton("Details & Vorschläge"); sysbtn.setObjectName("flat"); sysbtn.clicked.connect(self.open_system)
+        sysbtn = QPushButton("Details && Vorschläge"); sysbtn.setObjectName("flat"); sysbtn.clicked.connect(self.open_system)
         sg.addWidget(make_label("System", "muted"), 3, 0, Qt.AlignmentFlag.AlignTop)
         sgs = QHBoxLayout(); sgs.addWidget(self.st_sys); sgs.addWidget(sysbtn); sgs.addStretch(); sg.addLayout(sgs, 3, 1)
         self.st_mir = make_label("–", wrap=True)
@@ -943,9 +944,8 @@ class Win(QWidget):
         self.aurbtn.setEnabled(False); arow.addWidget(self.aurbtn); arow.addStretch(); c.lay.addStretch()
 
         # Anordnung: breit = Einstellungen links, Status + Updates rechts, Ablauf darunter; schmal = eine Spalte
-        self.grid = QGridLayout(); self.grid.setSpacing(14); lay.addLayout(self.grid)
-        self._wide = None; self.reflow()
-        lay.addStretch()
+        self.grid = QGridLayout(); self.grid.setSpacing(14); lay.addLayout(self.grid, 1)
+        self._wide = None; self._log_pref = None; self.reflow()
 
         # Fußleiste
         foot = QFrame(); foot.setObjectName("root"); outer.addWidget(foot)
@@ -1031,23 +1031,29 @@ class Win(QWidget):
         self.resize(self.width(), max(480, min(need + 4, scr - 60)))
 
     def reflow(self):
-        wide = self.width() >= 880
-        if wide == self._wide: return
-        self._wide = wide
+        """Drei Stufen: breit (3 Spalten, alles auf einer Seite), mittel (2 Spalten + Ablauf darunter), schmal (1 Spalte)."""
+        mode = "triple" if self.width() >= 1380 else "double" if self.width() >= 880 else "single"
+        if mode == self._wide: return
+        self._wide = mode
         g = self.grid
         for cd in (self.card_set, self.card_flow, self.card_status, self.card_upd): g.removeWidget(cd)
         self.bar.parentWidget().layout().removeWidget(self.bar)
-        if wide: self.card_upd.lay.insertWidget(self.card_upd.lay.count() - 1, self.bar)   # unten rechts, in der freien Fläche
-        else: self.card_flow.lay.insertWidget(4, self.bar)                                  # direkt unter den Schritten
+        if mode != "single": self.card_upd.lay.insertWidget(self.card_upd.lay.count() - 1, self.bar)   # unten, in der freien Fläche
+        else: self.card_flow.lay.insertWidget(4, self.bar)                                                # direkt unter den Schritten
         for i in range(4): g.setRowStretch(i, 0)
-        for i in range(2): g.setColumnStretch(i, 0)
-        if wide:
+        for i in range(3): g.setColumnStretch(i, 0)
+        if mode == "triple":
+            g.addWidget(self.card_set, 0, 0, 2, 1); g.addWidget(self.card_status, 0, 1); g.addWidget(self.card_upd, 1, 1)
+            g.addWidget(self.card_flow, 0, 2, 2, 1)
+            g.setColumnStretch(0, 4); g.setColumnStretch(1, 4); g.setColumnStretch(2, 7); g.setRowStretch(1, 1)
+            if not self.liveview.isVisible() and self._log_pref is not False: self.set_live(True)   # Platz ist da: Protokoll gleich zeigen
+        elif mode == "double":
             g.addWidget(self.card_set, 0, 0, 2, 1); g.addWidget(self.card_status, 0, 1); g.addWidget(self.card_upd, 1, 1)
             g.addWidget(self.card_flow, 2, 0, 1, 2)
-            g.setColumnStretch(0, 1); g.setColumnStretch(1, 1); g.setRowStretch(1, 1)
+            g.setColumnStretch(0, 1); g.setColumnStretch(1, 1); g.setRowStretch(1, 1); g.setRowStretch(2, 1)
         else:
             for i, cd in enumerate((self.card_set, self.card_flow, self.card_status, self.card_upd)): g.addWidget(cd, i, 0)
-            g.setColumnStretch(0, 1)
+            g.setColumnStretch(0, 1); g.setRowStretch(1, 1)
 
     def resizeEvent(self, e):
         super().resizeEvent(e); self.reflow()
@@ -1059,7 +1065,10 @@ class Win(QWidget):
             e.accept()
 
     def toggle_live(self):
-        show = not self.liveview.isVisible()
+        self._log_pref = not self.liveview.isVisible()      # Wunsch des Benutzers merken (wird nicht mehr automatisch überstimmt)
+        self.set_live(self._log_pref)
+
+    def set_live(self, show):
         self.liveview.setVisible(show); self.rawbtn.setVisible(show)
         self.logbtn.setText("Ablaufprotokoll verbergen ▴" if show else "Ablaufprotokoll anzeigen ▾")
         if show: self.refresh_liveview()

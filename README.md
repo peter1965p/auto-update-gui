@@ -33,7 +33,7 @@ Man sieht jederzeit, **was** das Tool gerade tut – und es ersetzt das Cachy-Up
 - **Download-Fortschritt in Echtzeit** (auch wenn pacman nichts ausgibt): MiB, Prozent, Geschwindigkeit, Restzeit und die gerade ladenden Pakete – gelesen aus dem pacman-Cache
 - **Pac-Man** als Fortschrittsanzeige 👾: frisst Punkte und Geister, jagt sie bei unbestimmter Dauer; im Leerlauf „READY!“, nach dem Lauf „LEVEL CLEAR“ oder bei Fehlern „GAME OVER“
 - **Systray** mit Update-Zähler als Badge und Benachrichtigung; Check alle 3 Stunden
-- Responsives Layout: breit = Einstellungen links, Status und verfügbare Updates rechts, Ablauf darunter; schmal = eine Spalte
+- Responsives Layout in drei Stufen: sehr breit (ab ca. 1380 px) = drei Spalten (Einstellungen | Status + Updates | Ablauf mit Protokoll) auf einer Seite; breit = Einstellungen links, Status + Updates rechts, Ablauf darunter; schmal = eine Spalte
 - Animierte Switches, Karten-Layout; **Einstellungen** (⚙ im Fenster oder Tray-Menü): Farbschema hell/dunkel/System,
   Akzentfarbe, Prüfintervall, Benachrichtigungen, Autostart – alles live umschaltbar
 - **Selbst-Update:** prüft GitHub-Releases; bei neuer Version erscheint ein Hinweis mit Knopf „Jetzt aktualisieren“
