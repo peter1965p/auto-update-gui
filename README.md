@@ -27,6 +27,7 @@ Man sieht jederzeit, **was** das Tool gerade tut – und es ersetzt das Cachy-Up
 - **Ablaufanzeige** Snapshot → pacman → AUR mit Start-/Endzeit und Dauer pro Schritt, aktueller Tätigkeit
   („Lade herunter 12/20 · mesa“, „AUR: docker-desktop · Lese pkg Liste …“) und „letzte Ausgabe vor …“
 - **Ablaufprotokoll** mit Uhrzeit pro Ereignis: was wann heruntergeladen, installiert und gebaut wurde (pacman und AUR getrennt); Standardansicht ist die Rohausgabe, umschaltbar auf ausgewertete Ereignisse (Auswahl wird gemerkt)
+- **Mirrors**: Status (zuletzt bewertet, nächste automatische Bewertung des CachyOS-Timers) und Knopf „Mirrors jetzt aktualisieren“ (nutzt `cachyos-rate-mirrors`, Sicherung als `*-backup`)
 - **Sicherheitsprüfung** mit `arch-audit`: zeigt installierte Pakete mit bekannten Lücken (CVE), Schweregrad und ob ein Fix verfügbar ist; Hinweis im Tray bei neuen Fixes (abschaltbar)
 - **Download-Fortschritt in Echtzeit** (auch wenn pacman nichts ausgibt): MiB, Prozent, Geschwindigkeit, Restzeit und die gerade ladenden Pakete – gelesen aus dem pacman-Cache
 - **Pac-Man** als Fortschrittsanzeige 👾: frisst Punkte und Geister, jagt sie bei unbestimmter Dauer; im Leerlauf „READY!“, nach dem Lauf „LEVEL CLEAR“ oder bei Fehlern „GAME OVER“
@@ -50,7 +51,7 @@ cd auto-update-gui && sudo ./install.sh
 Updates des Tools selbst kommen danach über das Tray-Menü („Nach Tool-Update suchen“ / „Tool auf vX aktualisieren“)
 oder den Hinweis im Fenster. Deinstallieren: `sudo ./uninstall.sh`.
 
-Benötigt: `python-pyqt6`, `git`, `curl`, `pacman-contrib` (checkupdates), optional `snapper`, `paru` und `arch-audit` (Sicherheitsprüfung).
+Benötigt: `python-pyqt6`, `git`, `curl`, `pacman-contrib` (checkupdates), optional `snapper`, `paru`, `arch-audit` (Sicherheitsprüfung) und `cachyos-rate-mirrors` (Mirror-Knopf, nur CachyOS).
 
 `install.sh` deaktiviert zusätzlich Tray-Applet und Timer von Cachy-Update (`arch-update`) für den
 aufrufenden Benutzer. Rückgängig:
