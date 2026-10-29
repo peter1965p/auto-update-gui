@@ -132,13 +132,22 @@ def parse_audit(out):
 
 def audit_text(items):
     if not items: return "Sicherheit (arch-audit): ✓ keine bekannten Lücken"
-    fixable = sum(1 for a in items if a["fix"])
-    head = f"Sicherheit (arch-audit): ⚠ {len(items)} {'Paket' if len(items) == 1 else 'Pakete'} mit bekannten Lücken · {fixable} mit Fix verfügbar"
+    fixable = [a for a in items if a["fix"]]
+    n = len(items); open_ = n - len(fixable)
+    if fixable:
+        head = f"Sicherheit (arch-audit): ⚠ {len(fixable)} {'Paket hat' if len(fixable) == 1 else 'Pakete haben'} eine Lücke mit verfügbarem Fix – bitte aktualisieren"
+        if open_: head += f"\n   (dazu {open_} ohne Fix)"
+        show = fixable
+    else:
+        head = (f"Sicherheit (arch-audit): ✓ nichts zu tun – {n} {'Paket' if n == 1 else 'Pakete'} mit bekannten Lücken, "
+                "für die es noch keinen Fix gibt")
+        show = items[:3]
     rows = []
-    for a in items[:5]:
+    for a in show[:5]:
         cve = ", ".join(a["cves"][:2]) + (f" +{len(a['cves']) - 2}" if len(a["cves"]) > 2 else "")
-        rows.append(f"   {a['name']} · {SEV_DE.get(a['sev'], 'unbekannt')} · " + (f"Fix {a['fix']}" if a["fix"] else "noch kein Fix") + (f" · {cve}" if cve else ""))
-    return head + "\n" + "\n".join(rows) + ("\n   …" if len(items) > 5 else "")
+        rows.append(f"   {a['name']} · {SEV_DE.get(a['sev'], 'unbekannt')} · " + (f"Fix {a['fix']}" if a["fix"] else "kein Fix") + (f" · {cve}" if cve else ""))
+    more = len(show) - 5 if fixable else n - 3
+    return head + "\n" + "\n".join(rows) + (f"\n   … und {more} weitere" if more > 0 else "")
 
 def fmt_dur(secs):
     secs = max(0, int(secs))
