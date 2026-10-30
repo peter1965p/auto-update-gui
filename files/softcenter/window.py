@@ -3,7 +3,7 @@ import shlex
 
 from PyQt6.QtCore import QEvent, QSize, Qt, QTimer
 from PyQt6.QtGui import QIcon
-from PyQt6.QtWidgets import (QFrame, QHBoxLayout, QLabel, QListWidget, QListWidgetItem, QMessageBox, QPushButton,
+from PyQt6.QtWidgets import (QApplication, QFrame, QHBoxLayout, QLabel, QListWidget, QListWidgetItem, QMessageBox, QPushButton,
                              QStackedWidget, QVBoxLayout, QWidget)
 
 from . import backend, common, system_info
@@ -270,6 +270,9 @@ class MainWindow(QWidget):
             return
         dlg = TerminalDialog(cmd, "SoftCenter – Terminal", self)
         dlg.setAttribute(Qt.WidgetAttribute.WA_DeleteOnClose)
+        if QApplication.activeModalWidget() is not None:
+            # Läuft gerade ein modaler Dialog (z. B. "Sicherheit"), würde er Tastatur und Maus des Terminals sperren
+            dlg.setWindowModality(Qt.WindowModality.ApplicationModal)
         dlg.finished_cmd.connect(lambda *_: self.after_command())
         dlg.show()
 

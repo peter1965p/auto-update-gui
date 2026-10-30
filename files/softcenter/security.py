@@ -10,7 +10,7 @@ import subprocess
 import time
 import urllib.request
 
-from PyQt6.QtCore import QObject, Qt, QThread, pyqtSignal
+from PyQt6.QtCore import QObject, Qt, QThread, QTimer, pyqtSignal
 from PyQt6.QtWidgets import (QCheckBox, QDialog, QFrame, QHBoxLayout, QLabel, QPushButton, QScrollArea, QVBoxLayout,
                              QWidget)
 
@@ -404,7 +404,10 @@ class FixPlanDialog(QDialog):
         if not cmd:
             return
         self.accept()
-        self.host.run_in_terminal(cmd, "Diese Maßnahmen ausführen?\n\n%s" % cmd)
+        parent = self.parent()
+        if isinstance(parent, QDialog):
+            parent.accept()          # der Übersichtsdialog ist modal und würde das Terminal sperren (und ist danach veraltet)
+        QTimer.singleShot(0, lambda: self.host.run_in_terminal(cmd, "Diese Maßnahmen ausführen?\n\n%s" % cmd))
 
 
 class SecurityDialog(QDialog):

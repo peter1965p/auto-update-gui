@@ -75,6 +75,7 @@ class TerminalDialog(QDialog):
         self.state = QLabel("Starte …", self)
         self.state.setObjectName("status")
         self._pbuf = ""
+        self._stops = 0
         lay = QVBoxLayout(self)
         lay.addWidget(self.bar)
         lay.addWidget(self.state)
@@ -159,8 +160,21 @@ class TerminalDialog(QDialog):
             self.input.clear()
 
     def _interrupt(self):
-        if self._fd is not None:
+        """1. Klick: Strg+C. Weitere Klicks: SIGTERM an die Prozessgruppe (sudo reicht es an pacman weiter).
+        Bewusst kein SIGKILL: das könnte einen Prozess hinterlassen, der als root weiterläuft."""
+        if self._fd is None:
+            return
+        self._stops += 1
+        if self._stops == 1:
             os.write(self._fd, b"\x03")
+            self.btn_stop.setText("Beenden erzwingen")
+            self.state.setText("Abbruch gesendet (Strg+C) …")
+        else:
+            try:
+                os.killpg(self._pid, signal.SIGTERM)
+            except OSError:
+                pass
+            self.state.setText("Beenden angefordert (SIGTERM) …")
 
     # --- Ausgabe (einfacher ANSI-Interpreter) ---
     def _default_format(self):
