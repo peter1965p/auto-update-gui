@@ -170,6 +170,26 @@ def download_progress(since):
         pass
     return total, active
 
+def aur_activity(since):
+    """Fortschritt des AUR-Schritts aus dem paru-Cache: fertig gebaute Pakete und wachsende Quell-Downloads (.part).
+    paru/makepkg schreiben beim Laden und Bauen oft minutenlang nichts ins Journal."""
+    base = os.path.expanduser("~/.cache/paru/clone")
+    built, parts = set(), []
+    try:
+        for d in os.scandir(base):
+            if not d.is_dir(): continue
+            try: entries = list(os.scandir(d.path))
+            except OSError: continue
+            for e in entries:
+                if not e.is_file(follow_symlinks=False): continue
+                st = e.stat()
+                if st.st_mtime < since: continue
+                if e.name.endswith(".part"): parts.append((d.name, e.name[:-5], st.st_size))
+                elif ".pkg.tar" in e.name and not e.name.endswith(".sig") and "-debug-" not in e.name: built.add(d.name)
+    except OSError:
+        pass
+    return sorted(built), parts
+
 def new_counter():
     return SimpleNamespace(total=0, dl=0, inst=0, stage=None, last_dl="", last_pkg="", hook="", size="",
                            verbs=Counter(), nothing=False, rows=[], last_info="", events=0, stage_at={}, size_bytes=0, dl_live="")
@@ -274,7 +294,7 @@ def run_activity(r, ph):
                 "pre": "Pre-Transaction-Hooks …", "post": f"Post-Transaction-Hooks · {c.hook}",
                 "install": f"Installiere {c.inst}/{t}" + (f" · {c.last_pkg}" if c.last_pkg else "")}.get(c.stage, "Starte pacman …")
     if ph == "aur":
-        return c.last_info or "Starte paru …"
+        return c.dl_live or c.last_info or "Starte paru …"
     return ""
 
 def timeline_html(r, raw_mode=False):
@@ -903,9 +923,26 @@ class UpdatesPage(QWidget):
                 self.bar.setRange(0, 1000); self.bar.setValue(got * 1000 // c.size_bytes)
             elif cur == "pacman" and c.total and c.stage == "install":
                 self.bar.setRange(0, c.total); self.bar.setValue(c.inst)
+            elif cur == "aur" and r.start.get("aur"):
+                # AUR: fertig gebaute Pakete zählen (Pac-Man frisst pro Paket) und wachsende Quell-Downloads anzeigen
+                built, parts = aur_activity(r.start["aur"].timestamp() - 3)
+                total = len(c.rows)
+                psize = sum(sz for _d, _f, sz in parts)
+                nowt = time.monotonic(); self.dl_hist = [(t, b) for t, b in self.dl_hist if nowt - t < 15] + [(nowt, psize)]
+                (t0, b0) = self.dl_hist[0]; speed = (psize - b0) / (nowt - t0) if nowt - t0 >= 3 else 0
+                progressing = bool(parts) and (speed > 0 or psize > b0)
+                bits = []
+                if total: bits.append(f"{len(built)}/{total} gebaut")
+                if built: bits.append("fertig: " + ", ".join(built[:3]) + (" …" if len(built) > 3 else ""))
+                if parts:
+                    pk, fn, sz = parts[0]
+                    bits.append(f"lädt Quellen: {fn} {fmt_size(sz)}" + (f" · {fmt_size(speed)}/s" if speed > 1024 else ""))
+                c.dl_live = " · ".join(bits)
+                if total: self.bar.setRange(0, total); self.bar.setValue(len(built))
+                else: self.bar.setRange(0, 0)
             else:
                 self.bar.setRange(0, 0)  # unbestimmt: Pac-Man jagt die Geister
-            if cur != "pacman" or c.stage != "download": self.dl_hist = []
+            if not ((cur == "pacman" and c.stage == "download") or cur == "aur"): self.dl_hist = []
             self.render_steps(True, r)
             act = run_activity(r, cur) if cur else "Starte …"
             age = (DT.now() - r.last).total_seconds() if r.last else 0
