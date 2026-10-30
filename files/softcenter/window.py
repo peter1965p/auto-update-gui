@@ -274,6 +274,7 @@ class MainWindow(QWidget):
             # Läuft gerade ein modaler Dialog (z. B. "Sicherheit"), würde er Tastatur und Maus des Terminals sperren
             dlg.setWindowModality(Qt.WindowModality.ApplicationModal)
         dlg.finished_cmd.connect(lambda *_: self.after_command())
+        dlg.rerun.connect(lambda c, d=dlg: (d.close(), QTimer.singleShot(0, lambda: self.run_in_terminal(c, "Befehl erneut ausführen?\n\n%s" % c))))
         dlg.show()
 
     def after_command(self):

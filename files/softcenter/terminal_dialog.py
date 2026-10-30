@@ -12,9 +12,12 @@ from PyQt6.QtGui import QColor, QFont, QTextCharFormat, QTextCursor
 from PyQt6.QtWidgets import (QDialog, QHBoxLayout, QLabel, QLineEdit,
                                QPlainTextEdit, QPushButton, QVBoxLayout)
 
+from .common import sh
 from .pacbar import PacBar
 
 COLS, ROWS = 110, 30
+LOCK_FILE = "/var/lib/pacman/db.lck"
+LOCK_RX = re.compile(r"db\.lck|Datenbank nicht sperren|Datenbank konnte nicht gesperrt|unable to lock database", re.I)
 # Token: CSI-Sequenz | sonstige Escape-Sequenz | Steuerzeichen | normaler Text
 # Fortschritt aus der pacman-Ausgabe: "( 3/12) installing foo [####]" bzw. deutsch "… wird installiert"
 OP_LINE = re.compile(r"\(\s*(\d+)/(\d+)\)\s+([^\r\n]*)")
@@ -28,10 +31,12 @@ DEFAULT_FG = "#d0d0d0"
 class TerminalDialog(QDialog):
     """Führt einen Shell-Befehl in einem Pseudo-Terminal aus und zeigt die Ausgabe im Fenster."""
     finished_cmd = Signal(int)
+    rerun = Signal(str)          # Befehl nach dem Entfernen einer verwaisten Sperre erneut ausführen
 
     def __init__(self, cmd, title="Terminal", parent=None):
         super().__init__(parent)
         self.setWindowTitle(title)
+        self._cmd = cmd
         self.resize(900, 520)
         self._pid = None
         self._fd = None
@@ -79,6 +84,14 @@ class TerminalDialog(QDialog):
         lay = QVBoxLayout(self)
         lay.addWidget(self.bar)
         lay.addWidget(self.state)
+        # Hinweis bei gesperrter pacman-Datenbank (nur sichtbar, wenn nötig)
+        self.hint = QLabel("", self)
+        self.hint.setWordWrap(True)
+        self.hint.hide()
+        self.hint_btn = QPushButton("", self)
+        self.hint_btn.hide()
+        lay.addWidget(self.hint)
+        lay.addWidget(self.hint_btn, 0, Qt.AlignmentFlag.AlignLeft)
         lay.addWidget(self.view, 1)
         lay.addLayout(row)
 
@@ -133,6 +146,8 @@ class TerminalDialog(QDialog):
         self._feed("\r\n\x1b[1m[Beendet mit Exit-Code %d]\x1b[0m\r\n" % code)
         self.bar.set_mode("clear" if code == 0 else "over")
         self.state.setText("Fertig" if code == 0 else "Beendet mit Fehler (Exit-Code %d)" % code)
+        if code != 0:
+            self._check_lock()
         self.input.setEnabled(False)
         self.btn_stop.setEnabled(False)
         self.btn_close.setEnabled(True)
@@ -153,6 +168,37 @@ class TerminalDialog(QDialog):
         self.bar.setRange(0, total)
         self.bar.setValue(n)
         self.state.setText("%d/%d · %s" % (n, total, what[:90]))
+
+    def _check_lock(self):
+        """Scheitert der Befehl an der pacman-Sperre: prüfen, ob noch ein pacman läuft, und passend helfen."""
+        if not LOCK_RX.search(self.view.toPlainText()[-3000:]):
+            return
+        running = sh("pgrep", "-x", "pacman").stdout.split()
+        self.hint.show()
+        if running:
+            self.hint.setText("Ein anderer pacman läuft noch (Prozess %s). Warte, bis er fertig ist, und starte den Befehl dann erneut." % ", ".join(running))
+            self.hint_btn.setText("Erneut versuchen")
+            self.hint_btn.clicked.connect(lambda: self.rerun.emit(self._cmd))
+        else:
+            self.hint.setText("Die Datenbank ist gesperrt, aber es läuft kein pacman: Die Sperre ist verwaist (z. B. nach einem abgebrochenen "
+                              "Vorgang) und kann gefahrlos entfernt werden.")
+            self.hint_btn.setText("Verwaiste Sperre entfernen")
+            self.hint_btn.clicked.connect(self._remove_lock)
+        self.hint_btn.show()
+
+    def _remove_lock(self):
+        if sh("pgrep", "-x", "pacman").returncode == 0:        # nochmal prüfen: nie eine Sperre löschen, die jemand hält
+            self.hint.setText("Inzwischen läuft ein pacman – die Sperre wird nicht entfernt.")
+            return
+        r = sh("pkexec", "rm", "-f", LOCK_FILE)
+        self.hint_btn.clicked.disconnect()
+        if r.returncode:
+            self.hint.setText("Entfernen fehlgeschlagen: %s" % ((r.stderr or "abgebrochen").strip()[:120]))
+            self.hint_btn.hide()
+            return
+        self.hint.setText("✓ Sperre entfernt. Du kannst den Befehl jetzt erneut ausführen.")
+        self.hint_btn.setText("Befehl erneut ausführen")
+        self.hint_btn.clicked.connect(lambda: self.rerun.emit(self._cmd))
 
     def _send_line(self):
         if self._fd is not None:
