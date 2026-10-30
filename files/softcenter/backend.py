@@ -1,6 +1,7 @@
 """Paketsuche und -abfragen (pacman, AUR)."""
 import json
 import os
+import re
 import subprocess
 import urllib.parse
 import urllib.request
@@ -35,7 +36,7 @@ def search_repo(term):
 def search_aur(term):
     """Sucht über die AUR-RPC-Schnittstelle."""
     url = "https://aur.archlinux.org/rpc/v5/search/%s?by=name-desc" % urllib.parse.quote(term)
-    with urllib.request.urlopen(url, timeout=15) as r:
+    with urllib.request.urlopen(url, timeout=20) as r:
         data = json.load(r)
     return [("aur", p["Name"], p["Version"], p.get("Description") or "", False)
             for p in data.get("results", [])]
@@ -58,6 +59,22 @@ def search_installed(term, mode="installed"):
         if only is None or name in only:
             result.append((repo, name, head[1], lines[i + 1].strip(), True))
     return result
+
+
+def resolve_provider(name):
+    """Paket, das 'name' bereitstellt (z. B. redis -> valkey), falls es 'name' selbst nicht gibt.
+    Rückgabe: (quelle, paketname, version, beschreibung, installiert) oder None."""
+    out = subprocess.run(["pacman", "-Ss", "^%s$" % re.escape(name)], capture_output=True, text=True).stdout.splitlines()
+    best = None
+    for i in range(0, len(out) - 1, 2):
+        head = out[i].split()
+        if len(head) < 2 or "/" not in head[0]:
+            continue
+        repo, pkg = head[0].split("/", 1)
+        row = (repo, pkg, head[1], out[i + 1].strip(), "[installed" in out[i] or "[installiert" in out[i])
+        if best is None or (row[4] and not best[4]):
+            best = row
+    return best
 
 
 def installed_names():
@@ -84,6 +101,7 @@ def package_info(names):
 class SearchWorker(QObject):
     """Sucht im Hintergrund. scope: 'all' | 'repo' | 'aur' | 'installed'."""
     finished = Signal(list, str)
+    partial = Signal(list)  # Repo-Treffer sofort, die langsame AUR-Suche folgt danach
 
     def __init__(self, term, scope, keywords):
         super().__init__()
@@ -100,6 +118,8 @@ class SearchWorker(QObject):
             else:
                 if self.scope in ("all", "repo"):
                     rows += search_repo(term)
+                    if self.scope == "all" and self.term and len(self.term) >= 2:
+                        self.partial.emit(self._clean(rows))
                 if self.scope in ("all", "aur"):
                     try:
                         if self.term and len(self.term) >= 2:
@@ -111,6 +131,10 @@ class SearchWorker(QObject):
                         error = "AUR: %s" % e
         except Exception as e:
             error = str(e)
+        self.finished.emit(self._clean(rows), error)
+
+    def _clean(self, rows):
+        kw = self.keywords
         if kw:
             rows = [r for r in rows if any(k in (r[1] + " " + r[3]).lower() for k in kw)]
         seen, unique = set(), []
@@ -118,7 +142,7 @@ class SearchWorker(QObject):
             if (r[0], r[1]) not in seen:
                 seen.add((r[0], r[1]))
                 unique.append(r)
-        self.finished.emit(unique, error)
+        return unique
 
 
 # Pakete, die man nicht über die Oberfläche entfernen darf (System würde nicht mehr starten oder sich nicht mehr pflegen lassen)

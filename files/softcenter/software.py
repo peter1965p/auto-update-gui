@@ -182,7 +182,15 @@ class SoftwarePage(QWidget):
         self._worker.moveToThread(self._thread)
         self._thread.started.connect(self._worker.run)
         self._worker.finished.connect(self.on_results)
+        self._worker.partial.connect(self.on_partial)
         self._thread.start()
+
+    def on_partial(self, rows):
+        """Repo-Treffer zeigen, während das AUR noch antwortet."""
+        if self._pending or self._view[0] == "profile":
+            return
+        self.set_rows(rows)
+        self.status.setText("%d Pakete – AUR wird noch durchsucht ..." % len(rows))
 
     def on_results(self, rows, error):
         self._thread.quit()
@@ -204,14 +212,19 @@ class SoftwarePage(QWidget):
         pkgs = PROFILES[name]
         info = backend.package_info(pkgs)
         installed = backend.installed_names()
-        rows = []
+        rows, resolved = [], set()
         for p in pkgs:
             f = info.get(p, {})
             if f:
                 rows.append((f["Repository"], p, f.get("Version", ""), f.get("Description", ""), p in installed))
-            else:  # nicht in den Repos -> über den AUR-Helper versuchen
-                rows.append(("aur", p, "", "Nicht in den Repos – Installation über das AUR", p in installed))
-        self._set_aur = [p for p in pkgs if p not in info and p not in installed]
+            else:  # nicht unter diesem Namen im Repo -> ersetzt ihn ein anderes Paket (redis -> valkey)?
+                prov = None if p in installed else backend.resolve_provider(p)
+                if prov:
+                    rows.append((prov[0], prov[1], prov[2], "ersetzt %s – %s" % (p, prov[3]), prov[4] or prov[1] in installed))
+                    resolved.add(p)
+                else:  # sonst über den AUR-Helper versuchen
+                    rows.append(("aur", p, "", "Nicht in den Repos – Installation über das AUR", p in installed))
+        self._set_aur = [p for p in pkgs if p not in info and p not in installed and p not in resolved]
         self.set_rows(rows)
         missing = len(self._set_aur)
         self.status.setText("%d Pakete in der Auswahl" % len(pkgs) + (" (%d aus dem AUR)" % missing if missing else ""))
