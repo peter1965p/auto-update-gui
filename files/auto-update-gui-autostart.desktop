@@ -1,7 +1,7 @@
 [Desktop Entry]
 Type=Application
-Name=Automatische Updates
-Comment=Update-Überwachung im Systray
+Name=SoftCenter
+Comment=SoftCenter im Systray (Update-Überwachung)
 Exec=/usr/local/bin/auto-update-gui --tray
 Icon=system-software-update
 X-KDE-autostart-after=panel

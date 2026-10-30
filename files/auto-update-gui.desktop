@@ -1,10 +1,10 @@
 [Desktop Entry]
 Type=Application
-Name=Automatische Updates
-GenericName=Update-Automatik
-Comment=Zeitplan, Snapshots und Ablauf automatischer Systemupdates
+Name=SoftCenter
+GenericName=Software, System und Updates
+Comment=Software installieren und entfernen, System verwalten, automatische Updates
 Exec=/usr/local/bin/auto-update-gui
 Icon=system-software-update
 Categories=System;Settings;PackageManager;
-Keywords=update;upgrade;pacman;aur;snapper;aktualisieren;
+Keywords=update;upgrade;pacman;aur;snapper;aktualisieren;software;installieren;paket;deinstallieren;wartung;
 StartupWMClass=auto-update-gui

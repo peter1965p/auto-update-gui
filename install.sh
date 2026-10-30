@@ -10,6 +10,12 @@ for c in git curl checkupdates arch-audit; do
     command -v "$c" >/dev/null || echo "Hinweis: '$c' fehlt (git/curl: Selbst-Update, checkupdates: pacman-contrib, arch-audit: Sicherheitsprüfung)" >&2
 done
 install -Dm755 auto-update-run auto-update-apply auto-update-self auto-update-gui -t /usr/local/bin/
+# Python-Paket des SoftCenters (Software, System, Updates); das Programm in /usr/local/bin startet es
+rm -rf /usr/local/lib/auto-update-gui
+install -d /usr/local/lib/auto-update-gui
+cp -r softcenter /usr/local/lib/auto-update-gui/
+find /usr/local/lib/auto-update-gui -name __pycache__ -prune -exec rm -rf {} +
+python3 -m compileall -q /usr/local/lib/auto-update-gui || true
 install -Dm644 auto-update.service auto-update.timer -t /etc/systemd/system/
 install -Dm644 auto-update-gui.desktop -t /usr/share/applications/
 # Autostart im Systray bei jeder Anmeldung (Fenster bleibt dabei zu)
@@ -28,4 +34,4 @@ if [ -n "$U" ] && [ "$U" != root ] && [ -f /etc/xdg/autostart/arch-update-tray.d
     pkill -u "$U" -f arch-update-tray 2>/dev/null || true
     echo "Cachy-Update-Tray und -Timer deaktiviert (rückgängig: rm ~/.config/autostart/arch-update-tray.desktop; systemctl --user enable --now arch-update.timer)"
 fi
-echo "Fertig. Starte 'Automatische Updates' aus dem Anwendungsmenü (startet künftig automatisch im Systray und ersetzt Cachy-Update)."
+echo "Fertig. Starte 'SoftCenter' aus dem Anwendungsmenü (startet künftig automatisch im Systray und ersetzt Cachy-Update)."

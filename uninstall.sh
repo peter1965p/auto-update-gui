@@ -6,7 +6,7 @@ systemctl disable --now auto-update.timer 2>/dev/null || true
 rm -f /usr/local/bin/auto-update-{run,apply,self,gui} /etc/systemd/system/auto-update.{service,timer} \
       /usr/share/applications/auto-update-gui.desktop /etc/xdg/autostart/auto-update-gui.desktop \
       /etc/sudoers.d/auto-update-aur
-rm -rf /etc/systemd/system/auto-update.timer.d
+rm -rf /etc/systemd/system/auto-update.timer.d /usr/local/lib/auto-update-gui
 systemctl daemon-reload
 pkill -f /usr/local/bin/auto-update-gui 2>/dev/null || true
 echo "Entfernt. Cachy-Update wieder aktivieren (als normaler Benutzer):"

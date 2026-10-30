@@ -1,87 +1,90 @@
-# 🔄 auto-update-gui
+# 🧰 SoftCenter
 
-Moderne Qt6-Oberfläche für automatische Systemupdates unter Arch Linux und Arch-Derivaten (getestet auf CachyOS).
-Man sieht jederzeit, **was** das Tool gerade tut – und es ersetzt das Cachy-Update-Tray-Applet.
+**Software, System und Updates an einem Ort** für Arch Linux und Arch-Derivate (getestet auf CachyOS).
+Qt6-Oberfläche mit Seitenleiste: Software finden und installieren, Installiertes sehen und sauber entfernen,
+das System verwalten und automatische Updates planen – und bei allem sehen, was gerade passiert.
 
 <p align="center">
-  <img src="docs/screenshot-wide.png" width="760" alt="Breite Ansicht: Einstellungen, Status und Updates nebeneinander">
+  <img src="docs/screenshot-softcenter.png" width="900" alt="SoftCenter – Updates">
 </p>
-
 <p align="center">
-  <img src="docs/screenshot-ablauf.png" width="520" alt="Ablauf mit Pac-Man und Zeitleiste">
-</p>
-
-<p align="center">
-  <img src="docs/screenshot-running.png" width="360" alt="Update läuft (dunkles Theme)">
+  <img src="docs/screenshot-software.png" width="440" alt="Software – kuratierte Sammlung">
   &nbsp;
-  <img src="docs/screenshot-light.png" width="360" alt="Letzter Lauf (helles Theme)">
+  <img src="docs/screenshot-terminal.png" width="440" alt="Installation mit Pac-Man-Fortschritt">
 </p>
 
-## Features
+## Was es kann
 
-- **Zeitplan** per systemd-Timer: täglich, wöchentlich oder 5 Min. nach dem Start – läuft auch nachts ohne Login,
-  weckt den Rechner aus dem Standby (`WakeSystem`), verhindert Standby während des Updates und holt
-  verpasste Läufe nach dem nächsten Start nach (`Persistent`)
-- **Btrfs-Snapshot** mit Snapper vor jedem Update (optional)
-- **AUR-Updates** über paru (optional, mit Sicherheitshinweis)
-- **Ablaufanzeige** Snapshot → pacman → AUR mit Start-/Endzeit und Dauer pro Schritt, aktueller Tätigkeit
-  („Lade herunter 12/20 · mesa“, „AUR: docker-desktop · Lese pkg Liste …“) und „letzte Ausgabe vor …“
-- **Ablaufprotokoll** mit Uhrzeit pro Ereignis: was wann heruntergeladen, installiert und gebaut wurde (pacman und AUR getrennt); Standardansicht ist die Rohausgabe, umschaltbar auf ausgewertete Ereignisse (Auswahl wird gemerkt)
-- **Systemerkennung** (Arch, CachyOS, EndeavourOS, Garuda, Manjaro, BlackArch, Artix): Dialog „System & Quellen“ mit erkannter Distribution, Repos, CPU-Stufe (x86-64-v2/v3/v4) und Hinweisen zu Zusatzquellen (CachyOS-Repos, Chaotic-AUR, BlackArch) – nur Info und Anleitung, es wird nichts automatisch eingetragen. Das Mirror-Werkzeug passt sich an (cachyos-rate-mirrors oder reflector, Manjaro: keins)
-- **Mirrors**: Status (zuletzt bewertet, nächste automatische Bewertung des CachyOS-Timers) und Knopf „Mirrors jetzt aktualisieren“ (nutzt `cachyos-rate-mirrors`, Sicherung als `*-backup`)
-- **Sicherheitsprüfung** mit `arch-audit`: zeigt installierte Pakete mit bekannten Lücken (CVE), Schweregrad und ob ein Fix verfügbar ist; Hinweis im Tray bei neuen Fixes (abschaltbar)
-- **Download-Fortschritt in Echtzeit** (auch wenn pacman nichts ausgibt): MiB, Prozent, Geschwindigkeit, Restzeit und die gerade ladenden Pakete – gelesen aus dem pacman-Cache
-- **Pac-Man** als Fortschrittsanzeige 👾: frisst Punkte und Geister, jagt sie bei unbestimmter Dauer; im Leerlauf „READY!“, nach dem Lauf „LEVEL CLEAR“ oder bei Fehlern „GAME OVER“
-- **Systray** mit Update-Zähler als Badge und Benachrichtigung; Check alle 3 Stunden
-- Responsives Layout in drei Stufen: sehr breit (ab ca. 1380 px) = drei Spalten (Einstellungen | Status + Updates | Ablauf mit Protokoll) auf einer Seite; breit = Einstellungen links, Status + Updates rechts, Ablauf darunter; schmal = eine Spalte
-- Animierte Switches, Karten-Layout; **Einstellungen** (⚙ im Fenster oder Tray-Menü): Farbschema hell/dunkel/System,
-  Akzentfarbe, Prüfintervall, Benachrichtigungen, Autostart – alles live umschaltbar
-- **Selbst-Update:** prüft GitHub-Releases; bei neuer Version erscheint ein Hinweis mit Knopf „Jetzt aktualisieren“
-  (Passwortabfrage via `pkexec`, danach Neustart der GUI)
-- Startet beim Login automatisch im Tray (`--tray`); „Schließen“ minimiert nur ins Systray, komplett beenden über Rechtsklick auf das Tray-Icon → „Verlassen“
+### Updates
+- **Zeitplan** per systemd-Timer: täglich, wöchentlich oder nach dem Start – auch nachts ohne Login,
+  weckt den Rechner aus dem Standby und verhindert Standby während des Updates; verpasste Läufe werden nachgeholt.
+- **Ablauf:** optional Btrfs-Snapshot (Snapper) → `pacman -Syu` → optional AUR (paru).
+- **Ablaufanzeige** mit Start, Ende und Dauer pro Schritt, aktueller Tätigkeit, Download-Fortschritt in Echtzeit
+  (MiB, Prozent, MiB/s, Restzeit) und einem Ablaufprotokoll mit Uhrzeiten (Rohausgabe oder ausgewertet).
+- **Sicherheitsprüfung** mit `arch-audit` (CVE, Schweregrad, Fix verfügbar; Warnung nur, wenn es einen Fix gibt).
+- **Mirrors:** Status und Knopf „Mirrors jetzt aktualisieren“ (`cachyos-rate-mirrors` oder `reflector`, je nach System).
+- **Systray** mit Update-Zähler, Benachrichtigungen und Autostart; ersetzt Cachy-Update.
+
+### Software
+- **Suche** in Repo und AUR, Kategorien und **kuratierte Sammlungen** (Entwicklung, Office, Spiele …),
+  einzeln oder komplett installierbar.
+- **Installieren und Entfernen im eingebetteten Terminal** (Passwort- und Rückfragen funktionieren).
+- **Update-Regel:** Gibt es offene Updates, fragt die App vor dem Installieren „erst aktualisieren?“ (keine Teil-Updates).
+- **Sicheres Entfernen:** Vorher eine Vorschau, was alles mit entfernt würde. Wird ein Paket noch gebraucht, sagt die App von wem.
+  Systemkritische Pakete sind geschützt.
+
+### System und Wartung
+- **Systemübersicht:** Hardware, installierte Desktops, **installierte Sammlungen** – jeweils mit „Entfernen“.
+- **Desktop-Berater:** bewertet KDE, GNOME, Xfce, Hyprland & Co. nach Profil und Hardware.
+- **Wartung:** verwaiste Pakete, Paket-Cache, `.pacnew`-Dateien, fehlgeschlagene Dienste, Flatpak.
+- **Systemerkennung** (Arch, CachyOS, EndeavourOS, Garuda, Manjaro, BlackArch, Artix) mit Hinweisen zu Zusatzquellen.
+
+### Und sonst
+- **Pac-Man** 👾 als Fortschrittsanzeige: bei Updates und Installationen frisst er Punkte und Geister nach dem
+  echten Fortschritt („READY!“, „LEVEL CLEAR“, „GAME OVER“).
+- Helles/dunkles Theme, Akzentfarbe, responsives Layout (bis zu drei Spalten).
+- **Selbst-Update** über GitHub-Releases (Hinweis und ein Klick, mit Passwortabfrage).
 
 ## Installation
-
-Direkt aus Git:
 
 ```bash
 git clone --depth 1 https://github.com/peter1965p/auto-update-gui.git
 cd auto-update-gui && sudo ./install.sh
 ```
 
-Updates des Tools selbst kommen danach über das Tray-Menü („Nach Tool-Update suchen“ / „Tool auf vX aktualisieren“)
-oder den Hinweis im Fenster. Deinstallieren: `sudo ./uninstall.sh`.
+Benötigt: `python-pyqt6`, `git`, `curl`, `pacman-contrib` (checkupdates); optional `snapper`, `paru`/`yay`,
+`arch-audit`, `cachyos-rate-mirrors` oder `reflector`, `pacman-contrib` (`paccache`).
+`install.sh` deaktiviert Tray-Applet und Timer von Cachy-Update (`arch-update`) für den aufrufenden Benutzer (nur wenn vorhanden).
+Entfernen: `sudo ./uninstall.sh`. Start: Menü → **SoftCenter**, oder `auto-update-gui`.
 
-Benötigt: `python-pyqt6`, `git`, `curl`, `pacman-contrib` (checkupdates), optional `snapper`, `paru`, `arch-audit` (Sicherheitsprüfung) und `cachyos-rate-mirrors` (Mirror-Knopf, nur CachyOS).
-
-`install.sh` deaktiviert zusätzlich Tray-Applet und Timer von Cachy-Update (`arch-update`) für den
-aufrufenden Benutzer. Rückgängig:
-
-```bash
-rm ~/.config/autostart/arch-update-tray.desktop
-systemctl --user enable --now arch-update.timer
-```
+Ohne die Root-Teile (Timer, Dienst) lässt sich die App auch nur als Software-Center nutzen; die Update-Automatik
+richtet `install.sh` ein.
 
 ## Aufbau
 
-| Datei | Zweck |
+| Pfad | Zweck |
 |---|---|
-| `files/auto-update-gui` | Qt6-Oberfläche + Systray |
+| `files/auto-update-gui` | Startskript (findet das Paket) |
+| `files/softcenter/` | Python-Paket: `window` (Seitenleiste, Terminal), `updates`, `software`, `maintenance`, `pages` (System), `backend`, `catalog`, `desktops`, `pacbar`, `common` (Theme, Einstellungen) |
 | `files/auto-update-run` | vom systemd-Service ausgeführt: Snapshot, `pacman -Syu`, AUR |
 | `files/auto-update-apply` | schreibt Konfiguration und Timer (via `pkexec`) |
 | `files/auto-update-self` | holt einen Release-Tag von GitHub und installiert ihn (via `pkexec`) |
 | `files/auto-update.{service,timer}` | systemd-Units |
 
-Optionen der GUI: `--tray` (ohne Fenster starten), `--theme=dark|light`.
+Optionen: `--tray` (ohne Fenster starten), `--theme=dark|light`.
 
 ## Releases
 
-Die Versionsnummer steht in `files/auto-update-gui` (`VERSION`). Neue Version veröffentlichen:
+Die Versionsnummer steht in `files/softcenter/common.py` (`VERSION`). Neue Version veröffentlichen:
 
 ```bash
-# VERSION im Skript erhöhen, committen, dann:
-git tag v1.1.0 && git push --tags
-gh release create v1.1.0 --notes "Was ist neu"
+# VERSION erhöhen, committen, dann:
+git tag v3.1.0 && git push --tags
+gh release create v3.1.0 --notes "Was ist neu"
 ```
 
-Die GUI vergleicht den neuesten Release-Tag mit `VERSION`. Die Prüfung funktioniert nur, wenn das Repo öffentlich ist.
+Das Selbst-Update vergleicht den neuesten Release-Tag mit `VERSION`.
+
+## Herkunft
+
+Die Software-Seiten stammen aus dem früheren Projekt *SoftCenter* (PySide6) und wurden hier auf PyQt6 übernommen.
