@@ -22,6 +22,12 @@ LOCK_RX = re.compile(r"db\.lck|Datenbank nicht sperren|Datenbank konnte nicht ge
 # Fortschritt aus der pacman-Ausgabe: "( 3/12) installing foo [####]" bzw. deutsch "… wird installiert"
 OP_LINE = re.compile(r"\(\s*(\d+)/(\d+)\)\s+([^\r\n]*)")
 OP_VERB = re.compile(r"\b(installing|upgrading|removing|reinstalling|downgrading|installier\w*|aktualisier\w*|entfern\w*|wird (?:installiert|aktualisiert|entfernt))", re.I)
+# Bauphasen von makepkg (AUR): "==> Erstelle Paket: php85 8.5.9-2", "==> Starte build()…", "==> Empfange Quellen …"
+BUILD_PKG = re.compile(r"==>\s*(?:Making package|Erstelle Paket):\s*(\S+)")
+BUILD_PHASE = re.compile(r"==>\s*(?:(?:Starting|Starte)\s+(prepare|build|check|package)\(\)|"
+                         r"(Retrieving sources|Empfange Quellen|Extracting sources|Entpacke Quellen|Validating|Überprüfe))", re.I)
+PHASE_DE = {"prepare": "bereitet vor", "build": "kompiliert – das kann dauern", "check": "führt die Tests aus",
+            "package": "packt das Paket", "src": "holt die Quellen"}
 TOKEN = re.compile(r"\x1b\[([0-9;?]*)([ -/]*[@-~])|\x1b[\]PX^_].*?(?:\x07|\x1b\\)|\x1b[@-Z\\-_]|[\r\n\b\x07]|[^\x1b\r\n\b\x07]+")
 ANSI = {0: "#000000", 1: "#cc3333", 2: "#33cc33", 3: "#cccc33", 4: "#3399ff", 5: "#cc33cc", 6: "#33cccc", 7: "#d0d0d0"}
 ANSI_BRIGHT = {0: "#666666", 1: "#ff5555", 2: "#55ff55", 3: "#ffff55", 4: "#66b3ff", 5: "#ff77ff", 6: "#55ffff", 7: "#ffffff"}
@@ -80,6 +86,7 @@ class TerminalDialog(QDialog):
         self.state = QLabel("Starte …", self)
         self.state.setObjectName("status")
         self._pbuf = ""
+        self._pkg = ""
         self._stops = 0
         lay = QVBoxLayout(self)
         lay.addWidget(self.bar)
@@ -161,6 +168,17 @@ class TerminalDialog(QDialog):
         for m in OP_LINE.finditer(self._pbuf):
             if OP_VERB.search(m.group(3)):
                 last = m
+        # Bauphase (AUR): was zuletzt kam, gilt – beim Kompilieren erscheinen lange keine pacman-Zeilen mehr
+        build = None
+        for m in BUILD_PHASE.finditer(self._pbuf):
+            build = m
+        for m in BUILD_PKG.finditer(self._pbuf):
+            self._pkg = m.group(1)
+        if build is not None and (last is None or build.start() > last.start()):
+            phase = (build.group(1) or "src").lower()
+            self.bar.setRange(0, 0)
+            self.state.setText("Baut %s – %s" % (self._pkg or "Paket", PHASE_DE[phase]))
+            return
         if last is None:
             return
         n, total = int(last.group(1)), int(last.group(2))
