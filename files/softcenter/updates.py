@@ -3,7 +3,7 @@ import html, json, math, os, re, shutil, subprocess, sys, time
 from collections import Counter
 from datetime import datetime as DT
 from types import SimpleNamespace
-from PyQt6.QtCore import (QEasingCurve, QDateTime, QLocale, QPointF, QProcess, QRectF, QSettings, Qt, QTime,
+from PyQt6.QtCore import (pyqtSlot, QEasingCurve, QDateTime, QLocale, QPointF, QProcess, QRectF, QSettings, Qt, QTime,
     QTimer, QVariantAnimation, pyqtSignal)
 from PyQt6.QtGui import QAction, QColor, QFont, QIcon, QFontMetrics, QPainter, QPainterPath, QPalette, QPen, QPixmap
 from PyQt6.QtWidgets import (QAbstractButton, QApplication, QCheckBox, QComboBox, QDialog, QFrame, QGridLayout,
@@ -728,8 +728,37 @@ class UpdatesPage(QWidget):
         self.poll()
 
     # ---- Fenster
+    NOTIF = ("org.freedesktop.Notifications", "/org/freedesktop/Notifications", "org.freedesktop.Notifications")
+
     def notify(self, title, text, icon=QSystemTrayIcon.MessageIcon.Information):
-        if flag("notify"): self.tray.showMessage(title, text, icon)
+        """Desktop-Meldung mit „Öffnen“-Aktion. Qt's messageClicked kommt auf vielen Desktops (z. B. KDE) nie an –
+        deshalb direkt über D-Bus senden und die ActionInvoked-Antwort selbst auswerten."""
+        if not flag("notify"): return
+        try:
+            from PyQt6.QtCore import QMetaType
+            from PyQt6.QtDBus import QDBus, QDBusArgument, QDBusConnection, QDBusMessage
+            bus = QDBusConnection.sessionBus()
+            if not bus.isConnected(): raise RuntimeError("kein D-Bus")
+            if getattr(self, "_notif_ids", None) is None:
+                self._notif_ids = set()
+                bus.connect(self.NOTIF_SERVICE, self.NOTIF[1], self.NOTIF[2], "ActionInvoked", "us", self._notif_action)
+            msg = QDBusMessage.createMethodCall(*self.NOTIF, "Notify")
+            # D-Bus verlangt genaue Typen: replaces_id = uint32, actions = string-Liste
+            msg.setArguments(["SoftCenter", QDBusArgument(0, QMetaType.Type.UInt.value), "system-software-update", title, text,
+                              QDBusArgument(["default", "Öffnen"], QMetaType.Type.QStringList.value), {}, 10000])
+            reply = bus.call(msg, QDBus.CallMode.Block, 1500)
+            if reply.type() != QDBusMessage.MessageType.ReplyMessage or not reply.arguments(): raise RuntimeError("keine Antwort")
+            self._notif_ids.add(int(reply.arguments()[0]))
+        except Exception:
+            self.tray.showMessage(title, text, icon)
+
+    NOTIF_SERVICE = "org.freedesktop.Notifications"
+
+    @pyqtSlot("uint", "QString")
+    def _notif_action(self, nid, key):
+        if nid in getattr(self, "_notif_ids", ()) and key == "default":
+            self._notif_ids.discard(nid)
+            self.show_window()
 
     def apply_cfg(self):
         self.auditlabel.setVisible(flag("audit", True))
@@ -745,6 +774,7 @@ class UpdatesPage(QWidget):
 
     def show_window(self):
         self.host.bring_to_front()
+        self.host.go_to(("updates", ""))
 
     def quit(self):
         # Tray-Icon sofort entfernen, Timer/Prozesse stoppen, notfalls hart beenden
