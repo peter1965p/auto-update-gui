@@ -1,4 +1,5 @@
 """Hauptfenster: Seitenleiste mit Bereichen, Kopfzeile und die Seiten (Updates, Software, Wartung, System)."""
+import html
 import shlex
 
 from PyQt6.QtCore import QEvent, QSize, Qt, QTimer
@@ -6,7 +7,7 @@ from PyQt6.QtGui import QIcon
 from PyQt6.QtWidgets import (QApplication, QFrame, QHBoxLayout, QLabel, QListWidget, QListWidgetItem, QMessageBox, QPushButton,
                              QStackedWidget, QVBoxLayout, QWidget)
 
-from . import backend, common, system_info
+from . import backend, common, hints, system_info
 from .catalog import CURATED, GROUPS
 from .common import apply_theme, cfg, make_label, set_state, theme
 from .maintenance import MaintenancePage
@@ -274,8 +275,24 @@ class MainWindow(QWidget):
             # Läuft gerade ein modaler Dialog (z. B. "Sicherheit"), würde er Tastatur und Maus des Terminals sperren
             dlg.setWindowModality(Qt.WindowModality.ApplicationModal)
         dlg.finished_cmd.connect(lambda *_: self.after_command())
+        if install:
+            dlg.finished_cmd.connect(lambda code, c=cmd: self.show_hints(c) if code == 0 else None)
         dlg.rerun.connect(lambda c, d=dlg: (d.close(), QTimer.singleShot(0, lambda: self.run_in_terminal(c, "Befehl erneut ausführen?\n\n%s" % c))))
         dlg.show()
+
+    def show_hints(self, cmd):
+        """Nach einer erfolgreichen Installation: Einrichtung anbieten (Dienst starten usw.), falls nötig."""
+        for hint in hints.find_hints(cmd):
+            box = QMessageBox(self)
+            box.setWindowTitle("Noch einrichten?")
+            box.setIcon(QMessageBox.Icon.Information)
+            box.setText("<b>%s</b><br><br>%s<br><br><code>%s</code>" % (hint["title"], hint["text"], html.escape(hint["cmd"])))
+            go = box.addButton("Jetzt einrichten", QMessageBox.ButtonRole.AcceptRole)
+            box.addButton("Später", QMessageBox.ButtonRole.RejectRole)
+            box.exec()
+            if box.clickedButton() is go:
+                self.run_in_terminal(hint["cmd"], "Einrichten?\n\n%s" % hint["cmd"])
+                return  # ein Terminal nach dem anderen
 
     def after_command(self):
         self.software.refresh_installed()

@@ -41,6 +41,7 @@ das System verwalten und automatische Updates planen – und bei allem sehen, wa
 - **Desktop-Berater:** bewertet KDE, GNOME, Xfce, Hyprland & Co. nach Profil und Hardware.
 - **Suche mit Flathub:** Repo-Treffer erscheinen sofort, das AUR folgt; ein eigener Filter durchsucht Flathub. Findet sich nichts, öffnet „Im Web suchen“ GitHub, Flathub oder das AUR im Browser – nichts wird automatisch von fremden Quellen gebaut.
 - **CPU-Optimierung (CachyOS):** erkennt, welche Repo-Stufe (v3, v4, znver4) deine CPU kann, vergleicht mit den eingetragenen Repos und schlägt eine Umstellung vor – oder warnt, wenn die Stufe zu hoch ist.
+- **Einrichtungs-Hinweise:** Nach einer Installation bietet das Tool an, was das Paket noch braucht – etwa den Kartenleser-Dienst bei der AusweisApp, die Initialisierung von PostgreSQL/MariaDB oder das Starten von Docker, Valkey, Bluetooth oder CUPS. Nur wenn es noch nicht eingerichtet ist, mit sichtbarem Befehl.
 - **Wartung:** verwaiste Pakete, Paket-Cache, `.pacnew`-Dateien, fehlgeschlagene Dienste, Flatpak.
 - **Systemerkennung** (Arch, CachyOS, EndeavourOS, Garuda, Manjaro, BlackArch, Artix) mit Hinweisen zu Zusatzquellen.
 
