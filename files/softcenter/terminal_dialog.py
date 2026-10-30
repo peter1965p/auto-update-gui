@@ -26,6 +26,8 @@ OP_VERB = re.compile(r"\b(installing|upgrading|removing|reinstalling|downgrading
 BUILD_PKG = re.compile(r"==>\s*(?:Making package|Erstelle Paket):\s*(\S+)")
 BUILD_PHASE = re.compile(r"==>\s*(?:(?:Starting|Starte)\s+(prepare|build|check|package)\(\)|"
                          r"(Retrieving sources|Empfange Quellen|Extracting sources|Entpacke Quellen|Validating|Überprüfe))", re.I)
+# Flatpak: "Installiere 3/8 … ████ 62% 69,1 KB/s" bzw. englisch "Installing 3/8… 62%"
+FLATPAK_LINE = re.compile(r"(?:Installiere|Installing|Aktualisiere|Updating|Deinstalliere|Uninstalling)\s+(\d+)/(\d+)[^\r\n]*?(\d+)%")
 PHASE_DE = {"prepare": "bereitet vor", "build": "kompiliert – das kann dauern", "check": "führt die Tests aus",
             "package": "packt das Paket", "src": "holt die Quellen"}
 TOKEN = re.compile(r"\x1b\[([0-9;?]*)([ -/]*[@-~])|\x1b[\]PX^_].*?(?:\x07|\x1b\\)|\x1b[@-Z\\-_]|[\r\n\b\x07]|[^\x1b\r\n\b\x07]+")
@@ -174,6 +176,15 @@ class TerminalDialog(QDialog):
             build = m
         for m in BUILD_PKG.finditer(self._pbuf):
             self._pkg = m.group(1)
+        flat = None
+        for m in FLATPAK_LINE.finditer(self._pbuf):
+            flat = m
+        if flat is not None and (last is None or flat.start() > last.start()) and (build is None or flat.start() > build.start()):
+            n, total, pct = int(flat.group(1)), max(1, int(flat.group(2))), min(100, int(flat.group(3)))
+            self.bar.setRange(0, total * 100)
+            self.bar.setValue((n - 1) * 100 + pct)
+            self.state.setText("Flatpak %d/%d · %d %%" % (n, total, pct))
+            return
         if build is not None and (last is None or build.start() > last.start()):
             phase = (build.group(1) or "src").lower()
             self.bar.setRange(0, 0)

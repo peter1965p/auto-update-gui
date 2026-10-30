@@ -10,7 +10,7 @@ das System verwalten und automatische Updates planen – und bei allem sehen, wa
 <p align="center">
   <img src="docs/screenshot-software.png" width="440" alt="Software – kuratierte Sammlung">
   &nbsp;
-  <img src="docs/screenshot-terminal.png" width="440" alt="Installation mit Pac-Man-Fortschritt">
+  <img src="docs/screenshot-terminal.png" width="440" alt="Installation mit Pac-Man-Fortschritt (Flathub, Repo, AUR)">
 </p>
 
 ## Was es kann
@@ -85,8 +85,8 @@ Die Versionsnummer steht in `files/softcenter/common.py` (`VERSION`). Neue Versi
 
 ```bash
 # VERSION erhöhen, committen, dann:
-git tag v3.1.0 && git push --tags
-gh release create v3.1.0 --notes "Was ist neu"
+git tag vX.Y.Z && git push origin main vX.Y.Z
+gh release create vX.Y.Z --notes "Was ist neu"
 ```
 
 Das Selbst-Update vergleicht den neuesten Release-Tag mit `VERSION`.

@@ -38,6 +38,10 @@ HINTS = {
 HINTS["redis"] = HINTS["valkey"]  # redis wird auf Arch durch valkey bereitgestellt
 
 
+# Flatpak-Kennung (Präfix) -> Paketname, damit auch dort der passende Hinweis kommt
+FLATPAK_IDS = {"de.bund.ausweisapp": "ausweisapp", "org.postgresql": "postgresql"}
+
+
 def find_hints(cmd, run=None):
     """Hinweise zu den in einem Installationsbefehl genannten Paketen, ohne die schon erledigten."""
     run = run or (lambda c: sh("bash", "-c", c).returncode == 0)
@@ -45,6 +49,7 @@ def find_hints(cmd, run=None):
         words = shlex.split(cmd.replace(";", " ; ").replace("&&", " && "))
     except ValueError:
         words = cmd.split()
+    words = [next((v for k, v in FLATPAK_IDS.items() if w.startswith(k)), w) for w in words]
     found = []
     for w in words:
         if w in HINTS and w not in [f["pkg"] for f in found]:
