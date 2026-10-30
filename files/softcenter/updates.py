@@ -17,6 +17,7 @@ from . import common
 from .common import *
 from .sysdetect import *
 from .pacbar import PacBar
+from .security import SecurityDialog, pkg_info as sec_info, role as sec_role
 
 DAYS = [("Montag","Mon"),("Dienstag","Tue"),("Mittwoch","Wed"),("Donnerstag","Thu"),
         ("Freitag","Fri"),("Samstag","Sat"),("Sonntag","Sun")]
@@ -111,7 +112,7 @@ def parse_audit(out):
     res.sort(key=lambda a: (not a["fix"], SEV_RANK.get(a["sev"], 9), a["name"]))
     return res
 
-def audit_text(items):
+def audit_text(items, roles=None):
     if not items: return "Sicherheit (arch-audit): ✓ keine bekannten Lücken"
     fixable = [a for a in items if a["fix"]]
     n = len(items); open_ = n - len(fixable)
@@ -129,7 +130,8 @@ def audit_text(items):
     rows = []
     for a in show[:5]:
         cve = ", ".join(a["cves"][:2]) + (f" +{len(a['cves']) - 2}" if len(a["cves"]) > 2 else "")
-        rows.append(f"   {a['name']} · {SEV_DE.get(a['sev'], 'unbekannt')} · " + (f"Fix {a['fix']}" if a["fix"] else "kein Fix") + (f" · {cve}" if cve else ""))
+        rows.append(f"   {a['name']} · {SEV_DE.get(a['sev'], 'unbekannt')} · " + (f"Fix {a['fix']}" if a["fix"] else "kein Fix")
+                    + (f" · {roles[a['name']]}" if roles and a["name"] in roles else (f" · {cve}" if cve else "")))
     more = len(show) - 5 if fixable else n - 3
     return head + "\n" + "\n".join(rows) + (f"\n   … und {more} weitere" if more > 0 else "")
 
@@ -636,7 +638,11 @@ class UpdatesPage(QWidget):
         arow = QHBoxLayout(); c.lay.addLayout(arow)
         self.checkbtn = QPushButton("Jetzt prüfen"); self.checkbtn.clicked.connect(self.check_updates); arow.addWidget(self.checkbtn)
         self.aurbtn = QPushButton("AUR im Terminal installieren"); self.aurbtn.clicked.connect(self.install_aur)
-        self.aurbtn.setEnabled(False); arow.addWidget(self.aurbtn); arow.addStretch(); c.lay.addStretch()
+        self.aurbtn.setEnabled(False); arow.addWidget(self.aurbtn); arow.addStretch()
+        self.secbtn = QPushButton("Sicherheit: Details && Beheben …"); self.secbtn.setEnabled(False)
+        self.secbtn.setToolTip("Erklärt jedes betroffene Paket (wozu, wer braucht es, läuft ein Dienst) und zeigt, was sich beheben lässt.")
+        self.secbtn.clicked.connect(self.open_security); c.lay.addWidget(self.secbtn, 0, Qt.AlignmentFlag.AlignLeft)
+        c.lay.addStretch()
 
         # Anordnung: breit = Einstellungen links, Status + Updates rechts, Ablauf darunter; schmal = eine Spalte
         self.grid = QGridLayout(); self.grid.setSpacing(14); lay.addLayout(self.grid, 1)
@@ -1078,13 +1084,24 @@ class UpdatesPage(QWidget):
                                                                        bytes(self.procs[n].readAllStandardError()).decode()))
             p.start(cmd, args)
 
+    def open_security(self):
+        QApplication.setOverrideCursor(Qt.CursorShape.WaitCursor)       # die Bewertung fragt pacman und systemd ab
+        try: dlg = SecurityDialog(self, self.audit)
+        finally: QApplication.restoreOverrideCursor()
+        dlg.exec()
+
     def done_audit(self, code, out, err):
         if code is None:
-            self.audit = []; self.auditlabel.setText("Sicherheit: arch-audit fehlt  →  sudo pacman -S arch-audit"); return
+            self.audit = []; self.secbtn.setEnabled(False); self.auditlabel.setText("Sicherheit: arch-audit fehlt  →  sudo pacman -S arch-audit"); return
         items = parse_audit(out)
         if code not in (0, 1) or (not items and err.strip()):
-            self.audit = []; self.auditlabel.setText("Sicherheit (arch-audit): Prüfung fehlgeschlagen – keine Verbindung zu security.archlinux.org?"); return
-        self.audit = items; self.auditlabel.setText(audit_text(items))
+            self.audit = []; self.secbtn.setEnabled(False); self.auditlabel.setText("Sicherheit (arch-audit): Prüfung fehlgeschlagen – keine Verbindung zu security.archlinux.org?"); return
+        self.audit = items
+        roles = {}
+        for a in items[:8]:      # kurze Erklärung ("wozu") für die Zeilen der Karte
+            info = sec_info(a["name"]); n = len(info["required"])
+            roles[a["name"]] = sec_role(a["name"], info) + (f" ({n} brauchen es)" if n else "")
+        self.auditlabel.setText(audit_text(items, roles)); self.secbtn.setEnabled(bool(items))
 
     def done_check(self, name, code, out, err=""):
         self.procs.pop(name, None)

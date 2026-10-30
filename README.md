@@ -21,6 +21,7 @@ das System verwalten und automatische Updates planen – und bei allem sehen, wa
 - **Ablauf:** optional Btrfs-Snapshot (Snapper) → `pacman -Syu` → optional AUR (paru).
 - **Ablaufanzeige** mit Start, Ende und Dauer pro Schritt, aktueller Tätigkeit, Download-Fortschritt in Echtzeit
   (MiB, Prozent, MiB/s, Restzeit) und einem Ablaufprotokoll mit Uhrzeiten (Rohausgabe oder ausgewertet).
+- **Sicherheit verstehen und beheben:** Zu jedem Paket mit bekannter Lücke zeigt das Tool, wozu es dient, ob du es selbst installiert hast, wer es braucht, ob ein Dienst läuft und ob er von außen erreichbar ist, dazu die Meldungen des Arch-Sicherheitsteams. **„Beheben“** spielt vorhandene Updates ein und schlägt sonst nur Maßnahmen vor, die das Risiko senken (unnötige Dienste stoppen, unnötige Pakete entfernen) – jede einzeln zum Ankreuzen, mit sichtbarem Befehl. Es baut keine Entwicklungsstände und installiert nichts Fremdes.
 - **Sicherheitsprüfung** mit `arch-audit` (CVE, Schweregrad, Fix verfügbar; Warnung nur, wenn es einen Fix gibt).
 - **Ausnahmeliste:** Pakete, die der automatische Lauf überspringen soll (pacman und paru, `--ignore`). Am fehlgeschlagenen AUR-Schritt gibt es dazu einen Knopf „Paket künftig überspringen“.
 - **Mirrors:** Status und Knopf „Mirrors jetzt aktualisieren“ (`cachyos-rate-mirrors` oder `reflector`, je nach System).
