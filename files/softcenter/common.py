@@ -7,10 +7,10 @@ from PyQt6.QtCore import (QEasingCurve, QDateTime, QLocale, QPointF, QProcess, Q
     QTimer, QVariantAnimation, pyqtSignal)
 from PyQt6.QtGui import QAction, QColor, QFont, QIcon, QFontMetrics, QPainter, QPainterPath, QPalette, QPen, QPixmap
 from PyQt6.QtWidgets import (QAbstractButton, QApplication, QCheckBox, QComboBox, QDialog, QFrame, QGridLayout,
-    QHBoxLayout, QLabel, QMenu, QMessageBox, QPlainTextEdit, QProgressBar, QPushButton, QScrollArea,
+    QHBoxLayout, QLabel, QLineEdit, QMenu, QMessageBox, QPlainTextEdit, QProgressBar, QPushButton, QScrollArea,
     QSizePolicy, QSystemTrayIcon, QTextEdit, QTimeEdit, QVBoxLayout, QWidget)
 
-VERSION = "3.0.3"
+VERSION = "3.1.0"
 REPO = "peter1965p/auto-update-gui"
 CONF = "/etc/auto-update.conf"
 THEMES = [("Wie das System", "system"), ("Hell", "light"), ("Dunkel", "dark")]

@@ -6,6 +6,7 @@ set -u
 SNAPSHOT=${SNAPSHOT:-1}
 AUR=${AUR:-0}
 AUR_USER=${AUR_USER:-}
+IGNORE=${IGNORE:-}
 
 phase() { echo "[auto-update] Phase: $1"; }
 
@@ -14,8 +15,15 @@ if [ "$SNAPSHOT" = 1 ] && snapper list-configs 2>/dev/null | grep -qw root; then
     snapper -c root create -c number -d "vor Auto-Update" || echo "Snapshot fehlgeschlagen, fahre trotzdem fort"
 fi
 
+# Ausnahmeliste: diese Pakete weder mit pacman noch mit paru aktualisieren
+IGN_ARGS=()
+if [ -n "$IGNORE" ]; then
+    IGN_ARGS=(--ignore "$IGNORE")
+    echo "[auto-update] Ausnahmeliste (wird übersprungen): ${IGNORE//,/, }"
+fi
+
 phase pacman
-/usr/bin/pacman -Syu --noconfirm
+/usr/bin/pacman -Syu --noconfirm ${IGN_ARGS[@]+"${IGN_ARGS[@]}"}
 rc=$?
 
 if [ "$AUR" = 1 ] && [ -n "$AUR_USER" ]; then
@@ -25,7 +33,7 @@ if [ "$AUR" = 1 ] && [ -n "$AUR_USER" ]; then
     # Dienst. Die Ausgabe deshalb durch den Dienst leiten (| cat), damit sie im Journal dieses Laufs steht.
     AUR_HOME=$(getent passwd "$AUR_USER" | cut -d: -f6)
     (cd "$AUR_HOME" && runuser -u "$AUR_USER" -- env HOME="$AUR_HOME" USER="$AUR_USER" LOGNAME="$AUR_USER" \
-        PATH=/usr/local/bin:/usr/bin paru -Sua --noconfirm --skipreview) 2>&1 | cat
+        PATH=/usr/local/bin:/usr/bin paru -Sua --noconfirm --skipreview ${IGN_ARGS[@]+"${IGN_ARGS[@]}"}) 2>&1 | cat
     [ "${PIPESTATUS[0]}" -eq 0 ] || rc=1
 fi
 phase done

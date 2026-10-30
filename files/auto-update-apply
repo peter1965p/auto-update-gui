@@ -1,12 +1,15 @@
 #!/bin/bash
-# Aufruf (root, via pkexec): auto-update-apply ENABLED MODE DAY TIME SNAPSHOT AUR
+# Aufruf (root, via pkexec): auto-update-apply ENABLED MODE DAY TIME SNAPSHOT AUR [IGNORE]
+# IGNORE: Paketnamen, durch Komma getrennt, die beim automatischen Update übersprungen werden (optional, leer = keine)
 set -eu
-[ $# -eq 6 ] || { echo "Falsche Argumente" >&2; exit 2; }
-EN=$1 MODE=$2 DAY=$3 TIME=$4 SNAP=$5 AUR=$6
+[ $# -eq 6 ] || [ $# -eq 7 ] || { echo "Falsche Argumente" >&2; exit 2; }
+EN=$1 MODE=$2 DAY=$3 TIME=$4 SNAP=$5 AUR=$6 IGN=${7:-}
 [[ $EN =~ ^[01]$ && $SNAP =~ ^[01]$ && $AUR =~ ^[01]$ ]] || exit 2
 [[ $MODE =~ ^(daily|weekly|boot)$ ]] || exit 2
 [[ $DAY =~ ^(Mon|Tue|Wed|Thu|Fri|Sat|Sun)$ ]] || exit 2
 [[ $TIME =~ ^([01][0-9]|2[0-3]):[0-5][0-9]$ ]] || exit 2
+# Ausnahmeliste: nur gültige Paketnamen, kommagetrennt (die Datei wird später als Shell gelesen – nichts anderes zulassen)
+[[ -z $IGN || $IGN =~ ^[A-Za-z0-9@._+-]+(,[A-Za-z0-9@._+-]+)*$ ]] || { echo "Ungültige Ausnahmeliste" >&2; exit 2; }
 
 AUR_USER=""
 SUDOERS=/etc/sudoers.d/auto-update-aur
@@ -30,6 +33,7 @@ TIME=$TIME
 SNAPSHOT=$SNAP
 AUR=$AUR
 AUR_USER=$AUR_USER
+IGNORE=$IGN
 CONF
 
 mkdir -p /etc/systemd/system/auto-update.timer.d

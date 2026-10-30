@@ -36,8 +36,30 @@ STEPS = [
      "paru -Sua: AUR-Pakete bauen und installieren (ohne PKGBUILD-Prüfung)."),
 ]
 
+RX_PKGNAME = re.compile(r"^[A-Za-z0-9@._+-]+$")
+
+def norm_ignore(text):
+    """'a, b  c' -> 'a,b,c': nur gültige Paketnamen, ohne Doppelte (so erwartet es auto-update-apply)."""
+    names = [n for n in re.split(r"[,\s;]+", text or "") if n and RX_PKGNAME.match(n)]
+    return ",".join(dict.fromkeys(names))
+
+def system_ignored():
+    """Pakete, die schon in /etc/pacman.conf (IgnorePkg) ignoriert werden."""
+    return [x for x in sh("pacman-conf", "IgnorePkg").stdout.split() if x]
+
+def failed_pkgs(r):
+    """Namen der AUR-Pakete, die im Lauf nicht gebaut werden konnten (aus 'Pakete konnten nicht erstellt werden: …')."""
+    out = []
+    for e in r.events:
+        if e[2] != "err": continue
+        m = re.search(r"nicht erstellt werden:\s*(.+)$", e[3]) or re.search(r"[Ff]ailed to build[^:]*:\s*(.+)$", e[3])
+        for n in re.split(r"[,\s]+", m.group(1).strip()) if m else []:
+            n = re.sub(r"-\d[^-]*-\d+$", "", n)           # Version und Release abschneiden
+            if n and n not in out: out.append(n)
+    return out
+
 def load_conf():
-    c = {"ENABLED":"0","MODE":"daily","DAY":"Mon","TIME":"04:00","SNAPSHOT":"1"}
+    c = {"ENABLED":"0","MODE":"daily","DAY":"Mon","TIME":"04:00","SNAPSHOT":"1","IGNORE":""}
     try:
         for line in open(CONF):
             if "=" in line:
@@ -98,9 +120,12 @@ def audit_text(items):
         if open_: head += f"\n   (dazu {open_} ohne Fix)"
         show = fixable
     else:
-        head = (f"Sicherheit (arch-audit): ✓ nichts zu tun – {n} {'Paket' if n == 1 else 'Pakete'} mit bekannten Lücken, "
-                "für die es noch keinen Fix gibt")
-        show = items[:3]
+        sev = Counter(a["sev"] for a in items)
+        breakdown = ", ".join(f"{sev[k]} {SEV_DE[k]}" for k in ("critical", "high", "medium", "low") if sev.get(k))
+        head = (f"Sicherheit (arch-audit): ℹ {n} {'Paket' if n == 1 else 'Pakete'} mit bekannten Lücken"
+                + (f" ({breakdown})" if breakdown else "") + " – für keines gibt es derzeit ein Update.\n"
+                "   Du kannst gerade nichts tun. Sobald ein Fix erscheint, wirst du hier und im Tray gewarnt.")
+        show = sorted(items, key=lambda a: (SEV_RANK.get(a["sev"], 9), a["name"]))[:3]
     rows = []
     for a in show[:5]:
         cve = ", ".join(a["cves"][:2]) + (f" +{len(a['cves']) - 2}" if len(a["cves"]) > 2 else "")
@@ -218,6 +243,7 @@ def parse_run(raw):
             r.c.setdefault(phase, new_counter())
             r.events.append((dt, phase, "phase", "▶ " + PHASE_TITLES.get(phase, phase))); continue
         r.raw.append((dt, phase, msg))
+        if msg.startswith("[auto-update] Ausnahmeliste"): r.events.append((dt, phase, "info", "ℹ " + msg[14:])); continue
         c = r.c.get(phase) or r.c["start"]
         if msg.startswith(NOISE) or "[J/n]" in msg or "[Y/n]" in msg: continue
         st = next(((k, t) for k, rx, t in STAGES if rx.search(msg)), None) if phase == "pacman" else None
@@ -338,6 +364,7 @@ class StepRow(QWidget):
         col.addWidget(make_label(title, "rowTitle"))
         self.desc = make_label(desc, "desc", True); col.addWidget(self.desc)
         self.detail = make_label("", "detail", True); self.detail.hide(); col.addWidget(self.detail)
+        self.act = QPushButton(); self.act.hide(); col.addWidget(self.act, 0, Qt.AlignmentFlag.AlignLeft)   # z. B. "Paket überspringen"
         lay.addLayout(col, 1)
         self.state = make_label("", "stState"); self.state.setAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignTop)
         lay.addWidget(self.state, 0, Qt.AlignmentFlag.AlignTop)
@@ -347,7 +374,13 @@ class StepRow(QWidget):
         self.badge.setText(glyph); set_state(self.badge, state)
         self.state.setText(text); set_state(self.state, state)
         self.detail.setText(detail); self.detail.setVisible(bool(detail)); set_state(self.detail, state)
+        self.act.hide()
         self.setEnabled(state != "off")
+
+    def set_action(self, text, fn):
+        try: self.act.clicked.disconnect()
+        except TypeError: pass
+        self.act.setText(text); self.act.clicked.connect(fn); self.act.show()
 
 class SystemDialog(QDialog):
     """Zeigt das erkannte System, aktive Repos und mögliche Zusatzquellen (nur Info, trägt nichts automatisch ein)."""
@@ -544,6 +577,11 @@ class UpdatesPage(QWidget):
                                  "Ein kompromittiertes AUR-Paket würde ungeprüft installiert.")
         c.lay.addWidget(self.opt_aur)
         self.enable, self.snap, self.aur = self.opt_enable.toggle, self.opt_snap.toggle, self.opt_aur.toggle
+        c.lay.addWidget(separator())
+        c.lay.addWidget(make_label("Beim automatischen Update überspringen", "rowTitle"))
+        self.ignore = QLineEdit(); self.ignore.setPlaceholderText("Paketnamen, durch Komma getrennt – z. B. pgadmin4-server")
+        c.lay.addWidget(self.ignore)
+        self.ignore_info = make_label("", "desc", True); c.lay.addWidget(self.ignore_info)
         c.lay.addStretch()      # Inhalt oben halten, auch wenn die rechte Spalte höher ist
 
         # Karte: Ablauf
@@ -642,6 +680,7 @@ class UpdatesPage(QWidget):
         self.time.timeChanged.connect(self.changed)
         for t in (self.enable, self.snap, self.aur):
             t.toggled.connect(self.changed)
+        self.ignore.textChanged.connect(self.changed)
         self.load()
         self.timer = QTimer(self); self.timer.timeout.connect(self.poll); self.timer.start(2000)
         self.checker = QTimer(self); self.checker.timeout.connect(lambda: self.check_updates(True)); self.checker.start(int(cfg.value("interval", 3)) * 3600 * 1000)
@@ -734,24 +773,30 @@ class UpdatesPage(QWidget):
     # ---- Einstellungen
     def ui_state(self):
         return (self.enable.isChecked(), self.mode.currentData(), self.day.currentData(),
-                self.time.time().toString("HH:mm"), self.snap.isChecked(), self.aur.isChecked())
+                self.time.time().toString("HH:mm"), self.snap.isChecked(), self.aur.isChecked(), norm_ignore(self.ignore.text()))
+
+    def refresh_ignore_info(self):
+        sysign = system_ignored()
+        self.ignore_info.setText("Diese Pakete aktualisieren weder pacman noch paru im automatischen Lauf, bis du sie hier entfernst."
+                                 + (f"\nZusätzlich in /etc/pacman.conf (IgnorePkg) eingetragen: {', '.join(sysign)}" if sysign else ""))
 
     def load(self):
         c = self.conf = load_conf()
-        for w in (self.mode, self.day, self.time, self.enable, self.snap, self.aur): w.blockSignals(True)
+        for w in (self.mode, self.day, self.time, self.enable, self.snap, self.aur, self.ignore): w.blockSignals(True)
+        self.ignore.setText(", ".join(n for n in c.get("IGNORE", "").split(",") if n)); self.refresh_ignore_info()
         self.enable.setChecked(sh("systemctl", "is-enabled", "auto-update.timer").stdout.strip() == "enabled")
         self.mode.setCurrentIndex(max(0, self.mode.findData(c["MODE"])))
         self.day.setCurrentIndex(max(0, self.day.findData(c["DAY"])))
         self.time.setTime(QTime.fromString(c["TIME"], "HH:mm"))
         self.snap.setChecked(c["SNAPSHOT"] == "1")
         self.aur.setChecked(c.get("AUR") == "1")
-        for w in (self.mode, self.day, self.time, self.enable, self.snap, self.aur): w.blockSignals(False)
+        for w in (self.mode, self.day, self.time, self.enable, self.snap, self.aur, self.ignore): w.blockSignals(False)
         self.saved = self.ui_state()
         self.changed(); self.refresh_status(); self.load_last()
 
     def changed(self, *_):
         on = self.enable.isChecked(); m = self.mode.currentData()
-        for w in (self.mode, self.snap, self.aur): w.setEnabled(on)
+        for w in (self.mode, self.snap, self.aur, self.ignore): w.setEnabled(on)
         self.day.setEnabled(on and m == "weekly"); self.time.setEnabled(on and m != "boot")
         self.day_l.setEnabled(self.day.isEnabled()); self.time_l.setEnabled(self.time.isEnabled())
         t = self.time.time().toString("HH:mm")
@@ -902,6 +947,17 @@ class UpdatesPage(QWidget):
                 en = {"snapshot": self.snap.isChecked(), "pacman": True, "aur": self.aur.isChecked()}[k]
                 info[k] = ("idle", "Geplant", "") if on and en else ("off", "Aus", "")
         for k, (st, text, detail) in info.items(): self.rows[k].set(st, text, detail)
+        if have and not running and result not in (None, "success") and info.get("aur", ("",))[0] == "failed":
+            skip = set(norm_ignore(self.ignore.text()).split(","))
+            names = [n for n in failed_pkgs(r) if n not in skip]
+            if names:
+                self.rows["aur"].set_action("„%s“ künftig überspringen" % ", ".join(names[:2]), lambda _=False, n=names: self.add_ignore(n))
+
+    def add_ignore(self, names):
+        """Pakete in die Ausnahmeliste eintragen (gespeichert wird mit 'Anwenden')."""
+        cur = [n for n in norm_ignore(self.ignore.text()).split(",") if n]
+        self.ignore.setText(", ".join(cur + [n for n in names if n not in cur]))
+        self.flash("Eingetragen – mit „Anwenden“ speichern", 8000)
 
     def load_last(self):
         _inv, res = last_run_state()
@@ -989,7 +1045,7 @@ class UpdatesPage(QWidget):
         aur = self.aur.isChecked() and self.enable.isChecked()
         args = ["pkexec", "/usr/local/bin/auto-update-apply", "1" if self.enable.isChecked() else "0",
                 self.mode.currentData(), self.day.currentData(), self.time.time().toString("HH:mm"),
-                "1" if self.snap.isChecked() else "0", "1" if aur else "0"]
+                "1" if self.snap.isChecked() else "0", "1" if aur else "0", norm_ignore(self.ignore.text())]
         if aur and QMessageBox.warning(
                 self, "AUR automatisch", "Damit darf dein Benutzer ohne Passwort 'sudo pacman' ausführen, und AUR-Pakete "
                 "werden ohne PKGBUILD-Prüfung gebaut.\n\nWirklich aktivieren?",
@@ -1035,19 +1091,27 @@ class UpdatesPage(QWidget):
         if name == "audit": self.done_audit(code, out, err)
         else:
             lines = [l for l in (out or "").splitlines() if l.strip()]
+            ign = {n for n in self.conf.get("IGNORE", "").split(",") if n} | set(system_ignored())
+            skipped = lambda l: "[ignoriert]" in l or "[ignored]" in l or l.split()[0] in ign
+            active = [l for l in lines if not skipped(l)]
+            n_skip = len(lines) - len(active)
+            lines = [l if not skipped(l) or "[ignor" in l else l + "  [übersprungen]" for l in lines]
             label = self.repolabel if name == "repo" else self.aurlabel
             title = "System (pacman)" if name == "repo" else "AUR"
             if code is None:
                 label.setText(f"{title}: Werkzeug fehlt ({'pacman-contrib' if name == 'repo' else 'paru'})")
             elif code not in (0, 1, 2) or (name == "repo" and code == 1):
                 label.setText(f"{title}: Prüfung fehlgeschlagen")
+            elif active:
+                label.setText(f"{title}: {len(active)} verfügbar" + (f" ({n_skip} übersprungen)" if n_skip else "") + "\n"
+                              + "\n".join(f"   {l}" for l in lines[:8]) + ("\n   …" if len(lines) > 8 else ""))
             elif lines:
-                label.setText(f"{title}: {len(lines)} verfügbar\n" + "\n".join(f"   {l}" for l in lines[:8]) + ("\n   …" if len(lines) > 8 else ""))
+                label.setText(f"{title}: ✓ alles aktuell ({n_skip} übersprungen)\n" + "\n".join(f"   {l}" for l in lines[:4]))
             else:
                 label.setText(f"{title}: ✓ alles aktuell")
-            if code in (0, 2): self.counts[name] = len(lines)
+            if code in (0, 2): self.counts[name] = len(active)
             else: self.counts.pop(name, None)
-            if name == "aur": self.aurbtn.setEnabled(bool(lines))
+            if name == "aur": self.aurbtn.setEnabled(bool(active))
         if not self.procs:
             self.checkbtn.setEnabled(True); self.checkbtn.setText("Jetzt prüfen")
             self.update_tray_badge()

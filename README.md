@@ -22,6 +22,7 @@ das System verwalten und automatische Updates planen – und bei allem sehen, wa
 - **Ablaufanzeige** mit Start, Ende und Dauer pro Schritt, aktueller Tätigkeit, Download-Fortschritt in Echtzeit
   (MiB, Prozent, MiB/s, Restzeit) und einem Ablaufprotokoll mit Uhrzeiten (Rohausgabe oder ausgewertet).
 - **Sicherheitsprüfung** mit `arch-audit` (CVE, Schweregrad, Fix verfügbar; Warnung nur, wenn es einen Fix gibt).
+- **Ausnahmeliste:** Pakete, die der automatische Lauf überspringen soll (pacman und paru, `--ignore`). Am fehlgeschlagenen AUR-Schritt gibt es dazu einen Knopf „Paket künftig überspringen“.
 - **Mirrors:** Status und Knopf „Mirrors jetzt aktualisieren“ (`cachyos-rate-mirrors` oder `reflector`, je nach System).
 - **Systray** mit Update-Zähler, Benachrichtigungen und Autostart; ersetzt Cachy-Update.
 
