@@ -175,6 +175,13 @@ class SearchWorker(QObject):
             if (r[0], r[1]) not in seen:
                 seen.add((r[0], r[1]))
                 unique.append(r)
+        if self.term:  # nach Relevanz: Name passt genau/beginnt/enthält, dann Repo vor Flathub vor AUR
+            t = self.term.lower()
+            def key(r):
+                n = r[1].lower()
+                match = 0 if n == t else 1 if n.startswith(t) else 2 if t in n else 3
+                return (match, {"aur": 2, "flatpak": 1}.get(r[0], 0), n)
+            unique.sort(key=key)
         return unique
 
 
