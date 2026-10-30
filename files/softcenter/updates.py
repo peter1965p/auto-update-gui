@@ -60,7 +60,8 @@ RX_HOOK = re.compile(r"^\(\s*(\d+)/(\d+)\)\s+(.*)$")
 RX_TOTAL = re.compile(r"^(?:Pakete?|Packages?|Aur|AUR) \((\d+)\)")
 RX_SIZE = re.compile(r"^(?:Gesamtgröße des Downloads|Total Download Size):\s+(.+)$")
 RX_ROW = re.compile(r"^(?:aur|[\w.+-]+)/(\S+)\s+(\S+)\s+(\S+)\s+(?:-?[\d.,]+ [KMG]iB|Nein|Ja|No|Yes)")
-RX_BAD = re.compile(r"^(?:fehler|error)\b|(?:fehlgeschlagen|failed)", re.I)
+RX_BAD = re.compile(r"^(?:==>\s*)?(?:fehler|error)\b|^curl: \(\d+\)|(?:fehlgeschlagen|failed)", re.I)
+RX_BUILT = re.compile(r"^==>\s*(?:Beendete Erstellung|Finished making):\s+(\S+)")
 RX_WARN = re.compile(r"^(?:warnung|warning)\b", re.I)
 RX_NOTHING = re.compile(r"nichts zu tun|nothing to do", re.I)
 NOISE = ("->", "  ->", "Copied:", "Updated:", "Saved:", "Building initramfs", "==> Using", "==> Starting build",
@@ -192,7 +193,7 @@ def aur_activity(since):
 
 def new_counter():
     return SimpleNamespace(total=0, dl=0, inst=0, stage=None, last_dl="", last_pkg="", hook="", size="",
-                           verbs=Counter(), nothing=False, rows=[], last_info="", events=0, stage_at={}, size_bytes=0, dl_live="")
+                           verbs=Counter(), nothing=False, rows=[], last_info="", events=0, stage_at={}, size_bytes=0, dl_live="", built=[])
 
 def parse_run(raw):
     """Wertet das Journal eines Update-Laufs (short-iso) aus: Phasen, Zeiten, Ereignisse, Zähler."""
@@ -212,7 +213,7 @@ def parse_run(raw):
             if pm.group(1) == "done":
                 if phase == "aur" and not r.c["aur"].rows and not r.c["aur"].nothing and r.c["aur"].events == 0:
                     r.events.append((dt, "aur", "ok", "✓ Im AUR sind derzeit keine Updates vorhanden"))
-                r.done = dt; phase = "done"; r.events.append((dt, "done", "phase", "■ Update beendet")); continue
+                r.done = dt; r.events.append((dt, "done", "phase", "■ Update beendet")); continue   # Zeilen danach gehören noch zum letzten Schritt
             phase = pm.group(1); r.phases.append(phase); r.start[phase] = dt
             r.c.setdefault(phase, new_counter())
             r.events.append((dt, phase, "phase", "▶ " + PHASE_TITLES.get(phase, phase))); continue
@@ -247,6 +248,8 @@ def parse_run(raw):
             if c.stage == "download": c.dl += 1; c.last_dl = name; ev(dt, "dl", f"⬇ {name}")
             else: ev(dt, "dl", f"⬇ {name}  (Paketdatenbank)")
             continue
+        mb = RX_BUILT.match(msg)
+        if mb and phase == "aur": c.built.append(mb.group(1))
         if RX_NOTHING.search(msg):
             c.nothing = True
             ev(dt, "ok", "✓ Im AUR sind derzeit keine Updates vorhanden" if phase == "aur" else "✓ Nichts zu tun – das System ist aktuell"); continue
@@ -280,6 +283,17 @@ def run_summary(r, ph):
         if c.rows: return f"{len(c.rows)} Paket(e): " + ", ".join(f"{n} {o}→{v}" for n, o, v in c.rows[:4]) + (" …" if len(c.rows) > 4 else "")
         return "Im AUR sind derzeit keine Updates vorhanden"
     return ""
+
+def fail_text(r, ph):
+    """Warum ist ein Schritt fehlgeschlagen? Teilerfolg (z. B. '2 von 3 gebaut') plus erste und letzte Fehlermeldung."""
+    errs = [e[3].lstrip("✕ ").strip() for e in r.events if e[1] == ph and e[2] == "err"]
+    c = r.c[ph]
+    lines = []
+    if ph == "aur" and c.rows: lines.append(f"{len(c.built)} von {len(c.rows)} AUR-Paketen gebaut")
+    uniq = list(dict.fromkeys(errs))
+    for e in ([uniq[0], uniq[-1]] if len(uniq) > 1 else uniq):
+        lines.append("✕ " + e[:170])
+    return "\n".join(lines) if lines else "mit Fehlern beendet – siehe Protokoll"
 
 def run_activity(r, ph):
     """Was passiert gerade in diesem Schritt (für laufende Schritte)."""
@@ -798,7 +812,7 @@ class UpdatesPage(QWidget):
         if "aur" in r.phases and r.c["aur"].events <= 1:
             since = r.start["aur"].strftime("%Y-%m-%d %H:%M:%S")
             cmd = ["journalctl", "--since", since, "-o", "short-iso", "--no-pager", f"_UID={os.getuid()}", "SYSLOG_IDENTIFIER=systemd-inhibit"]
-            if r.done: cmd[3:3] = ["--until", (r.done).strftime("%Y-%m-%d %H:%M:%S")]
+            if r.done: cmd[3:3] = ["--until", DT.fromtimestamp(r.done.timestamp() + 3).strftime("%Y-%m-%d %H:%M:%S")]   # +3 s: die letzte Zeile liegt oft in derselben Sekunde
             extra = sh(*cmd).stdout
             if extra.strip():
                 lines = list(dict.fromkeys(l for l in (raw + "\n" + extra).splitlines() if l.strip()))   # ohne Doppelte
@@ -879,7 +893,7 @@ class UpdatesPage(QWidget):
                 if k not in r.phases: info[k] = ("off", "Nicht ausgeführt", ""); continue
                 dur = f" · {fmt_dur((b - a).total_seconds())}" if a and b else ""
                 span = f"{a:%H:%M:%S} – {b:%H:%M:%S} · " if a and b else ""
-                info[k] = ("failed", "Fehler" + dur, span + "mit Fehlern beendet – siehe Protokoll") if k == bad else \
+                info[k] = ("failed", "Fehler" + dur, span.rstrip(" ·") + "\n" + fail_text(r, k)) if k == bad else \
                           ("done", "Fertig" + dur, (span + run_summary(r, k)).rstrip(" ·"))
         else:
             self.flow_title.setText("Geplanter Ablauf")
@@ -1140,8 +1154,10 @@ class UpdatesPage(QWidget):
         QMessageBox.warning(self, "Fehler", "Kein Terminal gefunden.")
 
     def show_log(self):
-        d = QDialog(self); d.setWindowTitle("Update-Log"); d.resize(760, 480)
+        d = QDialog(self); d.setWindowTitle("Update-Log"); d.resize(860, 520)
         v = QVBoxLayout(d); t = QPlainTextEdit(); t.setReadOnly(True); v.addWidget(t)
-        t.setPlainText(sh("journalctl", "-u", "auto-update.service", "-n", "400", "--no-pager").stdout or "Keine Einträge.")
+        r = self.fetch_run()      # derselbe Weg wie das Ablaufprotokoll: Dienst-Journal plus paru-Zeilen aus der Benutzer-Session
+        text = "\n".join(f"{dt:%d.%m. %H:%M:%S}  {PHASE_TAGS.get(ph, ph):6} {msg}" for dt, ph, msg in r.raw)
+        t.setPlainText(text or sh("journalctl", "-u", "auto-update.service", "-n", "400", "--no-pager").stdout or "Keine Einträge.")
         t.verticalScrollBar().setValue(t.verticalScrollBar().maximum())
         d.exec()

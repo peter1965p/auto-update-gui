@@ -21,10 +21,12 @@ rc=$?
 if [ "$AUR" = 1 ] && [ -n "$AUR_USER" ]; then
     phase aur
     echo "== AUR-Update (als $AUR_USER) =="
-    # Kein 'runuser -l': das öffnet eine eigene Login-Session, deren Ausgabe nicht mehr im Service-Journal landet
+    # paru läuft über runuser in der Sitzung des Benutzers; die Journal-Zeilen eines solchen Prozesses gehören nicht zum
+    # Dienst. Die Ausgabe deshalb durch den Dienst leiten (| cat), damit sie im Journal dieses Laufs steht.
     AUR_HOME=$(getent passwd "$AUR_USER" | cut -d: -f6)
     (cd "$AUR_HOME" && runuser -u "$AUR_USER" -- env HOME="$AUR_HOME" USER="$AUR_USER" LOGNAME="$AUR_USER" \
-        PATH=/usr/local/bin:/usr/bin paru -Sua --noconfirm --skipreview) || rc=1
+        PATH=/usr/local/bin:/usr/bin paru -Sua --noconfirm --skipreview) 2>&1 | cat
+    [ "${PIPESTATUS[0]}" -eq 0 ] || rc=1
 fi
 phase done
 exit $rc
