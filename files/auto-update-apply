@@ -2,6 +2,32 @@
 # Aufruf (root, via pkexec): auto-update-apply ENABLED MODE DAY TIME SNAPSHOT AUR [IGNORE]
 # IGNORE: Paketnamen, durch Komma getrennt, die beim automatischen Update übersprungen werden (optional, leer = keine)
 set -eu
+
+# Aussetzen: auto-update-apply suspend PAKET VERSION [PAKET VERSION …]  |  auto-update-apply resume PAKET [PAKET …]
+# Ausgesetzte Pakete merkt sich /var/lib/auto-update/suspended (Paket<TAB>Version<TAB>Datum). auto-update-run prüft vor jedem Lauf,
+# ob der Betreuer eine andere Version veröffentlicht hat, und hebt die Aussetzung dann selbst auf.
+case "${1:-}" in
+  suspend|resume)
+    MODE_S=$1; shift
+    STATE=/var/lib/auto-update/suspended
+    install -d -m 755 /var/lib/auto-update; touch "$STATE"; chmod 644 "$STATE"
+    drop() { awk -F'\t' -v p="$1" '$1 != p' "$STATE" > "$STATE.tmp" && mv "$STATE.tmp" "$STATE" && chmod 644 "$STATE"; }
+    if [ "$MODE_S" = suspend ]; then
+        [ $# -ge 2 ] && [ $(( $# % 2 )) -eq 0 ] || { echo "Falsche Argumente" >&2; exit 2; }
+        while [ $# -gt 0 ]; do
+            pkg=$1 ver=$2; shift 2
+            [[ $pkg =~ ^[A-Za-z0-9@._+-]+$ && $ver =~ ^[A-Za-z0-9.+:_~-]+$ ]] || { echo "Ungültige Angabe" >&2; exit 2; }
+            drop "$pkg"; printf '%s\t%s\t%s\n' "$pkg" "$ver" "$(date +%F)" >> "$STATE"
+        done
+    else
+        [ $# -ge 1 ] || { echo "Falsche Argumente" >&2; exit 2; }
+        for pkg in "$@"; do
+            [[ $pkg =~ ^[A-Za-z0-9@._+-]+$ ]] || { echo "Ungültige Angabe" >&2; exit 2; }
+            drop "$pkg"
+        done
+    fi
+    exit 0 ;;
+esac
 [ $# -eq 6 ] || [ $# -eq 7 ] || { echo "Falsche Argumente" >&2; exit 2; }
 EN=$1 MODE=$2 DAY=$3 TIME=$4 SNAP=$5 AUR=$6 IGN=${7:-}
 [[ $EN =~ ^[01]$ && $SNAP =~ ^[01]$ && $AUR =~ ^[01]$ ]] || exit 2

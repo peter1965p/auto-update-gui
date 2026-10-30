@@ -16,11 +16,35 @@ if [ "$SNAPSHOT" = 1 ] && snapper list-configs 2>/dev/null | grep -qw root; then
 fi
 
 # Ausnahmeliste: diese Pakete weder mit pacman noch mit paru aktualisieren
-IGN_ARGS=()
+IGN_ALL=$IGNORE
 if [ -n "$IGNORE" ]; then
-    IGN_ARGS=(--ignore "$IGNORE")
     echo "[auto-update] Ausnahmeliste (wird übersprungen): ${IGNORE//,/, }"
 fi
+
+# Ausgesetzte Pakete (fehlgeschlagen, warten auf ein Folge-Update des Betreuers): Gibt es im AUR inzwischen eine andere
+# Version, wird die Aussetzung beendet und es erneut versucht; sonst bleibt das Paket außen vor.
+STATE=/var/lib/auto-update/suspended
+if [ -s "$STATE" ]; then
+    while IFS=$'\t' read -r spkg sver _sdate; do
+        [ -n "$spkg" ] || continue
+        cur=$(curl -g -fsS -m 15 "https://aur.archlinux.org/rpc/v5/info?arg[]=$spkg" 2>/dev/null | python3 -c '
+import sys, json
+try:
+    r = json.load(sys.stdin)["results"]
+    print(r[0]["Version"] if r else "")
+except Exception:
+    print("")' 2>/dev/null)
+        if [ -n "$cur" ] && [ "$cur" != "$sver" ]; then
+            echo "[auto-update] Folge-Update für $spkg gefunden ($sver -> $cur): Aussetzung beendet, versuche es erneut"
+            awk -F'\t' -v p="$spkg" '$1 != p' "$STATE" > "$STATE.tmp" && mv "$STATE.tmp" "$STATE"
+        else
+            IGN_ALL="${IGN_ALL:+$IGN_ALL,}$spkg"
+            echo "[auto-update] Ausgesetzt (wartet auf Folge-Update): $spkg ($sver)"
+        fi
+    done < "$STATE"
+fi
+IGN_ARGS=()
+[ -z "$IGN_ALL" ] || IGN_ARGS=(--ignore "$IGN_ALL")
 
 phase pacman
 /usr/bin/pacman -Syu --noconfirm ${IGN_ARGS[@]+"${IGN_ARGS[@]}"}

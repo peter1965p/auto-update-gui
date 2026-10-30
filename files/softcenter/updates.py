@@ -37,6 +37,27 @@ STEPS = [
      "paru -Sua: AUR-Pakete bauen und installieren (ohne PKGBUILD-Prüfung)."),
 ]
 
+SUSP_FILE = "/var/lib/auto-update/suspended"     # Paket<TAB>Version<TAB>Datum, geschrieben von auto-update-apply
+
+def read_suspended():
+    """Ausgesetzte Pakete: Liste (Paket, fehlgeschlagene Version, Datum)."""
+    try:
+        return [tuple((l.rstrip("\n").split("\t") + ["", ""])[:3]) for l in open(SUSP_FILE) if l.strip()]
+    except OSError:
+        return []
+
+def failed_pkg_versions(r):
+    """Wie failed_pkgs, aber mit der fehlgeschlagenen Version: [('pgadmin4-server', '9.19-1')]."""
+    out = []
+    for e in r.events:
+        if e[2] != "err": continue
+        m = re.search(r"nicht erstellt werden:\s*(.+)$", e[3]) or re.search(r"[Ff]ailed to build[^:]*:\s*(.+)$", e[3])
+        for tok in re.split(r"[,\s]+", m.group(1).strip()) if m else []:
+            name = re.sub(r"-\d[^-]*-\d+$", "", tok)
+            ver = tok[len(name) + 1:] if name != tok else ""
+            if name and ver and name not in [o[0] for o in out]: out.append((name, ver))
+    return out
+
 RX_PKGNAME = re.compile(r"^[A-Za-z0-9@._+-]+$")
 
 def norm_ignore(text):
@@ -245,7 +266,7 @@ def parse_run(raw):
             r.c.setdefault(phase, new_counter())
             r.events.append((dt, phase, "phase", "▶ " + PHASE_TITLES.get(phase, phase))); continue
         r.raw.append((dt, phase, msg))
-        if msg.startswith("[auto-update] Ausnahmeliste"): r.events.append((dt, phase, "info", "ℹ " + msg[14:])); continue
+        if msg.startswith(("[auto-update] Ausnahmeliste", "[auto-update] Ausgesetzt", "[auto-update] Folge-Update")): r.events.append((dt, phase, "info", "ℹ " + msg[14:])); continue
         c = r.c.get(phase) or r.c["start"]
         if msg.startswith(NOISE) or "[J/n]" in msg or "[Y/n]" in msg: continue
         st = next(((k, t) for k, rx, t in STAGES if rx.search(msg)), None) if phase == "pacman" else None
@@ -366,7 +387,8 @@ class StepRow(QWidget):
         col.addWidget(make_label(title, "rowTitle"))
         self.desc = make_label(desc, "desc", True); col.addWidget(self.desc)
         self.detail = make_label("", "detail", True); self.detail.hide(); col.addWidget(self.detail)
-        self.act = QPushButton(); self.act.hide(); col.addWidget(self.act, 0, Qt.AlignmentFlag.AlignLeft)   # z. B. "Paket überspringen"
+        self.actbox = QVBoxLayout(); self.actbox.setSpacing(6); col.addLayout(self.actbox)       # z. B. "Paket aussetzen"
+        self.acts = []
         lay.addLayout(col, 1)
         self.state = make_label("", "stState"); self.state.setAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignTop)
         lay.addWidget(self.state, 0, Qt.AlignmentFlag.AlignTop)
@@ -376,13 +398,20 @@ class StepRow(QWidget):
         self.badge.setText(glyph); set_state(self.badge, state)
         self.state.setText(text); set_state(self.state, state)
         self.detail.setText(detail); self.detail.setVisible(bool(detail)); set_state(self.detail, state)
-        self.act.hide()
+        self.clear_actions()
         self.setEnabled(state != "off")
 
-    def set_action(self, text, fn):
-        try: self.act.clicked.disconnect()
-        except TypeError: pass
-        self.act.setText(text); self.act.clicked.connect(fn); self.act.show()
+    def clear_actions(self):
+        for b in self.acts:
+            b.setParent(None); b.deleteLater()      # sofort lösen, sonst bleibt der alte Knopf bis zum nächsten Zeichnen stehen
+        self.acts = []
+
+    def set_actions(self, actions):
+        """actions: Liste (Text, Funktion). Die Knöpfe stehen nebeneinander unter der Beschreibung."""
+        self.clear_actions()
+        for text, fn in actions:
+            b = QPushButton(text); b.clicked.connect(fn); b.setSizePolicy(QSizePolicy.Policy.Maximum, QSizePolicy.Policy.Fixed)
+            self.actbox.addWidget(b, 0, Qt.AlignmentFlag.AlignLeft); self.acts.append(b)
 
 class SystemDialog(QDialog):
     """Zeigt das erkannte System, aktive Repos und mögliche Zusatzquellen (nur Info, trägt nichts automatisch ein)."""
@@ -527,6 +556,7 @@ class UpdatesPage(QWidget):
         self.notified = 0
         self.selfproc = None
         self.mir_running = False
+        self.suspproc = None; self.susp_cur = {}
         self.manual = False
         self.ver_cb = None
         self.upd_tag = self.upd_url = ""
@@ -584,6 +614,7 @@ class UpdatesPage(QWidget):
         self.ignore = QLineEdit(); self.ignore.setPlaceholderText("Paketnamen, durch Komma getrennt – z. B. pgadmin4-server")
         c.lay.addWidget(self.ignore)
         self.ignore_info = make_label("", "desc", True); c.lay.addWidget(self.ignore_info)
+        self.susp_lay = QVBoxLayout(); self.susp_lay.setSpacing(6); c.lay.addLayout(self.susp_lay)      # ausgesetzte Pakete
         c.lay.addStretch()      # Inhalt oben halten, auch wenn die rechte Spalte höher ist
 
         # Karte: Ablauf
@@ -790,6 +821,7 @@ class UpdatesPage(QWidget):
         c = self.conf = load_conf()
         for w in (self.mode, self.day, self.time, self.enable, self.snap, self.aur, self.ignore): w.blockSignals(True)
         self.ignore.setText(", ".join(n for n in c.get("IGNORE", "").split(",") if n)); self.refresh_ignore_info()
+        self.refresh_suspended()
         self.enable.setChecked(sh("systemctl", "is-enabled", "auto-update.timer").stdout.strip() == "enabled")
         self.mode.setCurrentIndex(max(0, self.mode.findData(c["MODE"])))
         self.day.setCurrentIndex(max(0, self.day.findData(c["DAY"])))
@@ -954,10 +986,68 @@ class UpdatesPage(QWidget):
                 info[k] = ("idle", "Geplant", "") if on and en else ("off", "Aus", "")
         for k, (st, text, detail) in info.items(): self.rows[k].set(st, text, detail)
         if have and not running and result not in (None, "success") and info.get("aur", ("",))[0] == "failed":
-            skip = set(norm_ignore(self.ignore.text()).split(","))
-            names = [n for n in failed_pkgs(r) if n not in skip]
-            if names:
-                self.rows["aur"].set_action("„%s“ künftig überspringen" % ", ".join(names[:2]), lambda _=False, n=names: self.add_ignore(n))
+            skip = set(norm_ignore(self.ignore.text()).split(",")) | {p[0] for p in read_suspended()}
+            pairs = [(n, v) for n, v in failed_pkg_versions(r) if n not in skip]
+            if pairs:
+                names = [n for n, _v in pairs]; label = ", ".join(names[:2])
+                self.rows["aur"].set_actions([
+                    (f"„{label}“ aussetzen, bis ein Folge-Update kommt", lambda _=False, p=pairs: self.suspend_pkgs(p)),
+                    (f"„{label}“ dauerhaft überspringen", lambda _=False, n=names: self.add_ignore(n))])
+
+    def suspend_pkgs(self, pairs):
+        """Pakete aussetzen: Das Tool merkt sich die fehlgeschlagene Version und versucht es wieder, sobald es eine andere gibt."""
+        args = ["pkexec", "/usr/local/bin/auto-update-apply", "suspend"] + [x for p in pairs for x in p]
+        r = sh(*args)
+        if r.returncode: QMessageBox.warning(self, "Fehler", r.stderr or "Abgebrochen"); return
+        self.flash("✓ Ausgesetzt – das Tool prüft selbst, ob ein Folge-Update erscheint", 8000)
+        self.refresh_suspended(); self.check_suspended(); self.changed()
+
+    def resume_pkgs(self, names):
+        r = sh("pkexec", "/usr/local/bin/auto-update-apply", "resume", *names)
+        if r.returncode: QMessageBox.warning(self, "Fehler", r.stderr or "Abgebrochen"); return
+        self.flash("✓ Wieder aufgenommen – wird beim nächsten Lauf versucht", 8000)
+        self.refresh_suspended(); self.changed()
+
+    def refresh_suspended(self):
+        """Liste der ausgesetzten Pakete in den Einstellungen (mit Stand des Betreuers, falls schon geprüft)."""
+        while self.susp_lay.count():
+            w = self.susp_lay.takeAt(0).widget()
+            if w: w.setParent(None); w.deleteLater()
+        items = read_suspended()
+        if not items: return
+        self.susp_lay.addWidget(make_label("Ausgesetzt – wartet auf Folge-Update", "rowTitle"))
+        for pkg, ver, date in items:
+            cur = self.susp_cur.get(pkg)
+            state = ("prüfe …" if cur is None else
+                     f"✓ Folge-Update da: {cur} – wird beim nächsten Lauf versucht" if cur != ver else f"wartet (im AUR weiter {cur})")
+            row = QWidget(); rl = QVBoxLayout(row); rl.setContentsMargins(0, 0, 0, 0); rl.setSpacing(4)
+            rl.addWidget(make_label(f"{pkg} · {ver} schlug fehl (seit {date})\n{state}", "desc", True))
+            btn = QPushButton("Wieder aufnehmen"); btn.setSizePolicy(QSizePolicy.Policy.Maximum, QSizePolicy.Policy.Fixed)
+            btn.clicked.connect(lambda _=False, n=pkg: self.resume_pkgs([n]))
+            rl.addWidget(btn, 0, Qt.AlignmentFlag.AlignLeft)
+            self.susp_lay.addWidget(row)
+
+    def check_suspended(self):
+        """Fragt das AUR (im Hintergrund), ob für ausgesetzte Pakete eine andere Version erschienen ist."""
+        items = read_suspended()
+        if not items or self.suspproc: return
+        url = "https://aur.archlinux.org/rpc/v5/info?" + "&".join("arg[]=" + p[0] for p in items)
+        p = self.suspproc = QProcess(self)
+        p.finished.connect(lambda code, _s: self.susp_checked(code, bytes(p.readAllStandardOutput()).decode()))
+        p.start("curl", ["-g", "-fsS", "-m", "15", url])
+
+    def susp_checked(self, code, out):
+        self.suspproc = None
+        try: res = json.loads(out)["results"] if code == 0 else []
+        except (ValueError, KeyError): res = []
+        old = dict(self.susp_cur)
+        self.susp_cur = {r["Name"]: r["Version"] for r in res}
+        failed = {p[0]: p[1] for p in read_suspended()}
+        for n, cur in self.susp_cur.items():
+            if n in failed and cur != failed[n] and old.get(n) != cur:
+                self.notify("Folge-Update gefunden", f"{n}: {failed[n]} → {cur}. Es wird beim nächsten Lauf automatisch versucht.",
+                            QSystemTrayIcon.MessageIcon.Information)
+        self.refresh_suspended()
 
     def add_ignore(self, names):
         """Pakete in die Ausnahmeliste eintragen (gespeichert wird mit 'Anwenden')."""
@@ -1070,6 +1160,7 @@ class UpdatesPage(QWidget):
 
     def check_updates(self, silent=False):
         if self.procs: return
+        self.check_suspended()          # nebenbei: gibt es für ausgesetzte Pakete ein Folge-Update?
         self.checkbtn.setEnabled(False); self.checkbtn.setText("Prüfe …")
         self.repolabel.setText("System (pacman): prüfe …"); self.aurlabel.setText("AUR: prüfe …")
         checks = [("repo", "checkupdates", []), ("aur", "paru", ["-Qua"])]
@@ -1108,7 +1199,7 @@ class UpdatesPage(QWidget):
         if name == "audit": self.done_audit(code, out, err)
         else:
             lines = [l for l in (out or "").splitlines() if l.strip()]
-            ign = {n for n in self.conf.get("IGNORE", "").split(",") if n} | set(system_ignored())
+            ign = {n for n in self.conf.get("IGNORE", "").split(",") if n} | set(system_ignored()) | {p[0] for p in read_suspended()}
             skipped = lambda l: "[ignoriert]" in l or "[ignored]" in l or l.split()[0] in ign
             active = [l for l in lines if not skipped(l)]
             n_skip = len(lines) - len(active)

@@ -10,7 +10,7 @@ from PyQt6.QtWidgets import (QAbstractButton, QApplication, QCheckBox, QComboBox
     QHBoxLayout, QLabel, QLineEdit, QMenu, QMessageBox, QPlainTextEdit, QProgressBar, QPushButton, QScrollArea,
     QSizePolicy, QSystemTrayIcon, QTextEdit, QTimeEdit, QVBoxLayout, QWidget)
 
-VERSION = "3.2.0"
+VERSION = "3.3.0"
 REPO = "peter1965p/auto-update-gui"
 CONF = "/etc/auto-update.conf"
 THEMES = [("Wie das System", "system"), ("Hell", "light"), ("Dunkel", "dark")]
