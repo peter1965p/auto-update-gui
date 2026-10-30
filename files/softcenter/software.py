@@ -77,8 +77,8 @@ class SoftwarePage(QWidget):
         super().__init__()
         self.setObjectName("content")
         self.host = host
-        self._thread = self._worker = None
-        self._pending = False
+        self._running = []     # laufende Suchen (Thread, Worker)
+        self._gen = 0          # Nummer der aktuellen Suche
         self._rows = []        # alle Treffer der aktuellen Ansicht
         self._shown = 0        # davon bereits als Karten gebaut
         self._cards = []
@@ -185,35 +185,33 @@ class SoftwarePage(QWidget):
         if len(term) == 1:
             self.status.setText("min. 2 Zeichen")
             return
-        if self._thread is not None:  # läuft noch -> danach erneut suchen
-            self._pending = True
-            return
-        self.status.setText("Suche ...")
+        # Jede Suche läuft in einem eigenen Thread; alte Suchen (z. B. mit langsamem AUR) werden einfach ignoriert,
+        # damit ein neuer Suchbegriff nie auf sie warten muss.
+        self._gen += 1
+        gen = self._gen
         keywords = GROUPS.get(self._view[1]) if self._view[0] == "group" else None
-        self._thread = QThread(self)
-        self._worker = backend.SearchWorker(term, self.current_scope(), keywords)
-        self._worker.moveToThread(self._thread)
-        self._thread.started.connect(self._worker.run)
-        self._worker.finished.connect(self.on_results)
-        self._worker.partial.connect(self.on_partial)
-        self._thread.start()
+        thread = QThread(self)
+        worker = backend.SearchWorker(term, self.current_scope(), keywords)
+        worker.moveToThread(thread)
+        thread.started.connect(worker.run)
+        worker.finished.connect(lambda rows, error, g=gen: self.on_results(rows, error, g))
+        worker.partial.connect(lambda rows, g=gen: self.on_partial(rows, g))
+        worker.finished.connect(thread.quit)
+        thread.finished.connect(lambda t=thread: self._running.remove((t, worker)) if (t, worker) in self._running else None)
+        thread.finished.connect(thread.deleteLater)
+        self._running.append((thread, worker))
+        self.status.setText("Suche ...")
+        thread.start()
 
-    def on_partial(self, rows):
+    def on_partial(self, rows, gen):
         """Repo-Treffer zeigen, während das AUR noch antwortet."""
-        if self._pending or self._view[0] == "profile":
+        if gen != self._gen or self._view[0] == "profile":
             return
         self.set_rows(rows)
-        self.status.setText("%d Pakete – AUR wird noch durchsucht ..." % len(rows))
+        self.status.setText("%d Pakete – AUR/Flathub werden noch durchsucht ..." % len(rows))
 
-    def on_results(self, rows, error):
-        self._thread.quit()
-        self._thread.wait()
-        self._thread = self._worker = None
-        if self._pending:
-            self._pending = False
-            self.start_search()
-            return
-        if self._view[0] == "profile":
+    def on_results(self, rows, error, gen):
+        if gen != self._gen or self._view[0] == "profile":
             return
         self.set_rows(rows)
         self.web_btn.setVisible(bool(self.search.text().strip()) and self._view[0] != "installed")
@@ -337,13 +335,12 @@ class SoftwarePage(QWidget):
             card.set_installed(card.name in installed)
 
     def shutdown(self):
-        """Laufende Suche beenden, bevor der QThread zerstört wird."""
+        """Laufende Suchen beenden, bevor die QThreads zerstört werden."""
         self._timer.stop()
-        self._pending = False
-        if self._thread is not None:
-            self._worker.finished.disconnect(self.on_results)
-            self._thread.quit()
-            if not self._thread.wait(3000):  # Suche hängt (z. B. AUR-Timeout) -> hart beenden
-                self._thread.terminate()
-                self._thread.wait()
-            self._thread = self._worker = None
+        self._gen += 1
+        for thread, _worker in list(self._running):
+            thread.quit()
+            if not thread.wait(3000):  # Suche hängt (z. B. AUR-Timeout) -> hart beenden
+                thread.terminate()
+                thread.wait()
+        self._running.clear()

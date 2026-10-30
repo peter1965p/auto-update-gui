@@ -125,7 +125,7 @@ def package_info(names):
 class SearchWorker(QObject):
     """Sucht im Hintergrund. scope: 'all' | 'repo' | 'aur' | 'installed'."""
     finished = Signal(list, str)
-    partial = Signal(list)  # Repo-Treffer sofort, die langsame AUR-Suche folgt danach
+    partial = Signal(list)  # Zwischenstände: Repo zuerst, dann AUR; Flathub folgt zuletzt
 
     def __init__(self, term, scope, keywords):
         super().__init__()
@@ -156,6 +156,12 @@ class SearchWorker(QObject):
                                 rows += search_aur(k)
                     except Exception as e:  # AUR offline soll Repo-Treffer nicht verhindern
                         error = "AUR: %s" % e
+                if self.scope == "all" and self.term and len(self.term) >= 2 and flatpak_available():
+                    self.partial.emit(self._clean(rows))  # Repo + AUR schon zeigen, Flathub ist oft am langsamsten
+                    try:
+                        rows += search_flatpak(self.term)
+                    except Exception as e:
+                        error = (error + "; " if error else "") + "Flathub: %s" % e
         except Exception as e:
             error = str(e)
         self.finished.emit(self._clean(rows), error)
