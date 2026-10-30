@@ -10,7 +10,7 @@ from PyQt6.QtWidgets import (QAbstractButton, QApplication, QCheckBox, QComboBox
     QHBoxLayout, QLabel, QLineEdit, QMenu, QMessageBox, QPlainTextEdit, QProgressBar, QPushButton, QScrollArea,
     QSizePolicy, QSystemTrayIcon, QTextEdit, QTimeEdit, QVBoxLayout, QWidget)
 
-VERSION = "3.3.3"
+VERSION = "3.4.0"
 REPO = "peter1965p/auto-update-gui"
 CONF = "/etc/auto-update.conf"
 THEMES = [("Wie das System", "system"), ("Hell", "light"), ("Dunkel", "dark")]
@@ -193,6 +193,7 @@ def make_qss(t):
     QLabel#pkgDesc, QLabel#pkgMeta {{ color: {t['muted']}; background: transparent; }}
     QLabel#pkgBadge {{ background: {t['hover']}; color: {t['muted']}; border-radius: 6px; padding: 2px 8px; font-size: 11px; }}
     QLabel#pkgBadge[source="aur"] {{ color: {t['warn']}; }}
+    QLabel#pkgBadge[source="flatpak"] {{ color: {t['accent']}; }}
     QLabel#status {{ color: {t['muted']}; background: transparent; }}
     QScrollBar:vertical {{ background: transparent; width: 10px; margin: 2px; }}
     QScrollBar::handle:vertical {{ background: {t['border']}; border-radius: 4px; min-height: 30px; }}

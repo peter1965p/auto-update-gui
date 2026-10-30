@@ -2,9 +2,12 @@
 import shlex
 import shutil
 
-from PyQt6.QtCore import QSize, Qt, QThread, QTimer
+import urllib.parse
+
+from PyQt6.QtCore import QSize, Qt, QThread, QTimer, QUrl
+from PyQt6.QtGui import QDesktopServices
 from PyQt6.QtWidgets import (QAbstractItemView, QButtonGroup, QFrame, QHBoxLayout, QLabel, QLineEdit, QListWidget,
-                             QListWidgetItem, QMessageBox, QPushButton, QVBoxLayout, QWidget)
+                             QListWidgetItem, QMenu, QMessageBox, QPushButton, QVBoxLayout, QWidget)
 
 from . import backend
 from .catalog import GROUPS, PROFILES
@@ -12,7 +15,7 @@ from .common import repolish
 
 PAGE_SIZE = 60  # so viele Karten werden auf einmal gebaut
 CARD_HEIGHT = 88
-SCOPES = (("Alle", "all"), ("Repo", "repo"), ("AUR", "aur"))
+SCOPES = (("Alle", "all"), ("Repo", "repo"), ("AUR", "aur"), ("Flathub", "flatpak"))
 INSTALLED_SCOPES = (("Alle", "installed"), ("Selbst installiert", "explicit"), ("Fremd / AUR", "foreign"))
 
 
@@ -21,6 +24,7 @@ class PackageCard(QFrame):
         super().__init__()
         self.setObjectName("pcard")
         self.name = name
+        self.source = source
 
         title = QLabel(name)
         title.setObjectName("pkgTitle")
@@ -28,7 +32,7 @@ class PackageCard(QFrame):
         version_lbl.setObjectName("pkgMeta")
         self.badge = QLabel(source)
         self.badge.setObjectName("pkgBadge")
-        self.badge.setProperty("source", "aur" if source == "aur" else "repo")
+        self.badge.setProperty("source", source if source in ("aur", "flatpak") else "repo")
         self.desc = QLabel(desc or "Keine Beschreibung")
         self.desc.setObjectName("pkgDesc")
         self.desc.setWordWrap(False)
@@ -39,7 +43,7 @@ class PackageCard(QFrame):
         self.button.setObjectName("primary")
         self.button.setFixedWidth(130)
         self.button.setCursor(Qt.CursorShape.PointingHandCursor)
-        self.button.clicked.connect(lambda: on_remove(name) if self.installed else on_install(source, name))
+        self.button.clicked.connect(lambda: on_remove(name, source) if self.installed else on_install(source, name))
         self.tag = QLabel("✓ installiert")
         self.tag.setObjectName("infoRight")
         self.set_installed(installed)
@@ -125,6 +129,11 @@ class SoftwarePage(QWidget):
             chip_row.addWidget(b)
             self.maint_btns.append(b)
 
+        self.web_btn = QPushButton("Nichts Passendes? Im Web suchen …")
+        self.web_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.web_btn.clicked.connect(self.web_search)
+        self.web_btn.hide()
+
         self.cards = QListWidget()
         self.cards.setObjectName("cards")
         self.cards.setSelectionMode(QAbstractItemView.SelectionMode.NoSelection)
@@ -139,6 +148,7 @@ class SoftwarePage(QWidget):
         pk.addWidget(self.search)
         pk.addLayout(chip_row)
         pk.addWidget(self.cards, 1)
+        pk.addWidget(self.web_btn)
 
     # --- Ansicht wechseln ---
     def show_view(self, kind, name):
@@ -147,10 +157,13 @@ class SoftwarePage(QWidget):
         profile = kind == "profile"
         installed_view = kind == "installed"
         self.install_profile_btn.setVisible(profile)
-        for b, (text, scope) in zip(self.chip_widgets, INSTALLED_SCOPES if installed_view else SCOPES):
-            b.setText(text)
-            b.setProperty("scope", scope)
-            b.setVisible(not profile)
+        self.web_btn.hide()
+        scopes = INSTALLED_SCOPES if installed_view else SCOPES
+        for i, b in enumerate(self.chip_widgets):
+            if i < len(scopes):
+                b.setText(scopes[i][0])
+                b.setProperty("scope", scopes[i][1])
+            b.setVisible(not profile and i < len(scopes))
         self.chip_widgets[0].setChecked(True)
         for b in self.maint_btns:
             b.setVisible(installed_view)
@@ -203,7 +216,10 @@ class SoftwarePage(QWidget):
         if self._view[0] == "profile":
             return
         self.set_rows(rows)
+        self.web_btn.setVisible(bool(self.search.text().strip()) and self._view[0] != "installed")
         text = "%d Pakete" % len(rows)
+        if self.current_scope() == "flatpak" and not backend.flatpak_available():
+            text = "flatpak ist nicht installiert (sudo pacman -S flatpak)"
         self.status.setText(text + (" !" if error else ""))
         self.status.setToolTip(error)
 
@@ -264,6 +280,9 @@ class SoftwarePage(QWidget):
 
     # --- Installation (läuft im eingebetteten Terminal des Hauptfensters) ---
     def install(self, source, name):
+        if source == "flatpak":
+            self.host.run_in_terminal("flatpak install -y flathub %s" % shlex.quote(name), None, install=True)
+            return
         if source == "aur":
             helper = next((h for h in backend.AUR_HELPERS if shutil.which(h)), None)
             if helper is None:
@@ -274,8 +293,23 @@ class SoftwarePage(QWidget):
             cmd = "sudo pacman -S --needed %s" % shlex.quote(name)
         self.host.run_in_terminal(cmd, None, install=True)
 
-    def remove(self, name):
+    def remove(self, name, source="repo"):
+        if source == "flatpak":
+            self.host.run_in_terminal("flatpak uninstall -y %s" % shlex.quote(name),
+                                      "Flatpak „%s“ entfernen?" % name)
+            return
         self.host.remove_packages([name])
+
+    def web_search(self):
+        """Nichts Passendes gefunden: im Web weitersuchen (im Browser – nichts wird automatisch installiert)."""
+        term = urllib.parse.quote(self.search.text().strip())
+        menu = QMenu(self)
+        for label, url in (("GitHub durchsuchen", "https://github.com/search?type=repositories&q=%s" % term),
+                           ("Flathub im Browser", "https://flathub.org/apps/search?q=%s" % term),
+                           ("AUR im Browser", "https://aur.archlinux.org/packages?K=%s" % term),
+                           ("Im Web suchen", "https://duckduckgo.com/?q=%s+linux+install" % term)):
+            menu.addAction(label, lambda u=url: QDesktopServices.openUrl(QUrl(u)))
+        menu.exec(self.web_btn.mapToGlobal(self.web_btn.rect().bottomLeft()))
 
     def install_profile(self):
         name = self._view[1]

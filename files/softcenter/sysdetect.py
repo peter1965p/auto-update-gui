@@ -37,6 +37,46 @@ def cpu_level(flags=None):
     v4 = v3 | {"avx512f", "avx512bw", "avx512cd", "avx512dq", "avx512vl"}
     return 4 if v4 <= flags else 3 if v3 <= flags else 2 if v2 <= flags else 1
 
+def cpu_vendor_flags():
+    """(Hersteller, Familie, Flags) aus /proc/cpuinfo."""
+    vendor, fam, flags = "", 0, set()
+    try:
+        for l in open("/proc/cpuinfo"):
+            k, _, v = l.partition(":")
+            k, v = k.strip(), v.strip()
+            if k == "vendor_id" and not vendor: vendor = v
+            elif k == "cpu family" and not fam: fam = int(v)
+            elif k == "flags" and not flags: flags = set(v.split())
+    except (OSError, ValueError): pass
+    return vendor, fam, flags
+
+def cpu_best_repo(level, vendor="", fam=0, flags=frozenset()):
+    """Beste CachyOS-Repo-Stufe für diese CPU: 'znver4' (Zen 4/5), 'v4', 'v3' oder 'v2'/'' (keine optimierten Repos)."""
+    if vendor == "AuthenticAMD" and fam >= 25 and "avx512f" in flags: return "znver4"
+    return {4: "v4", 3: "v3"}.get(level, "")
+
+def repo_level(repos):
+    """Welche optimierten CachyOS-Repos sind eingetragen? 'znver4' > 'v4' > 'v3' > ''."""
+    names = " ".join(repos)
+    for key, tag in (("znver4", "znver4"), ("-v4", "v4"), ("-v3", "v3")):
+        if key in names: return tag
+    return ""
+
+def cpu_optimization(repos=None, vendor=None, fam=None, flags=None, level=None):
+    """Bewertung für die Kachel. Rückgabe: (zustand, titel, text); zustand: ok | upgrade | too_high | none."""
+    if vendor is None: vendor, fam, flags = cpu_vendor_flags()
+    level = cpu_level(flags) if level is None else level
+    repos = sh("pacman-conf", "--repo-list").stdout.split() if repos is None else repos
+    have, best = repo_level(repos), cpu_best_repo(level, vendor, fam, flags)
+    rank = {"": 0, "v3": 1, "v4": 2, "znver4": 3}
+    if not any(r.startswith("cachyos") for r in repos):
+        return "none", "Keine CachyOS-Repos", "Optimierte Pakete (x86-64-v3/v4) gibt es nur bei CachyOS. Deine CPU unterstützt Stufe v%d." % level
+    if rank[have] > rank[best]:
+        return "too_high", "Repo-Stufe zu hoch", "Eingetragen ist %s, deine CPU kann aber nur %s. Programme können mit „Illegal instruction“ abstürzen." % (have, best or "Standard")
+    if rank[have] < rank[best]:
+        return "upgrade", "Schnellere Pakete möglich", "Deine CPU kann %s, eingetragen ist %s. Die Umstellung läuft über das offizielle CachyOS-Skript." % (best, have or "Standard")
+    return "ok", "Optimal eingestellt", "Deine CPU nutzt %s – das passt zu ihr." % (have or "Standard")
+
 def detect_system(osr=None, repos=None, flags=None, has_pacman=None):
     osr = read_os_release() if osr is None else osr
     repos = sh("pacman-conf", "--repo-list").stdout.split() if repos is None else repos

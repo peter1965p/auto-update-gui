@@ -3,7 +3,7 @@ from PyQt6.QtCore import Qt, pyqtSignal
 from PyQt6.QtWidgets import (QComboBox, QFrame, QGridLayout, QHBoxLayout, QLabel, QPushButton, QScrollArea,
                              QVBoxLayout, QWidget)
 
-from . import desktops
+from . import desktops, sysdetect
 from .catalog import PROFILES
 from .common import Card, make_label, repolish, set_state
 
@@ -108,6 +108,30 @@ class OverviewPage(ColumnsPage):
         b.clicked.connect(lambda: self.host.remove_packages(names, label))
         return b
 
+    def _cpu_card(self):
+        """Kachel „CPU-Optimierung“ – nur auf CachyOS sinnvoll."""
+        try:
+            state, title, text = sysdetect.cpu_optimization()
+        except Exception:
+            return None
+        if state == "none":
+            return None
+        card = Card("CPU-Optimierung")
+        right = None
+        if state == "upgrade":
+            right = QPushButton("Umstellen …")
+            right.setObjectName("primary")
+            right.setCursor(Qt.CursorShape.PointingHandCursor)
+            right.clicked.connect(self._switch_repos)
+        card.lay.addWidget(InfoRow("✓" if state == "ok" else "!", "ok" if state == "ok" else "warn", title, text, right=right))
+        return card
+
+    def _switch_repos(self):
+        cmd = ("cd \"$(mktemp -d)\" && curl -fsSL https://mirror.cachyos.org/cachyos-repo.tar.xz -o r.tar.xz && "
+               "tar xf r.tar.xz && cd cachyos-repo && sudo ./cachyos-repo.sh")
+        self.host.run_in_terminal(cmd, "Auf die optimierten CachyOS-Repos umstellen?\n\nDas offizielle Skript von CachyOS ändert die "
+                                       "pacman-Quellen und installiert danach Pakete neu. Mach vorher ein Backup oder einen Snapshot.\n\n%s" % cmd)
+
     def show_info(self, info):
         self.reset()
         gpus = [t for _, t in info["gpus"]] or ["nicht erkannt"]
@@ -170,7 +194,8 @@ class OverviewPage(ColumnsPage):
         elif len(found) > 14:
             coll.lay.addWidget(make_label("… und %d weitere" % (len(found) - 14), "hint"))
 
-        self.add_column(hw, soft, sysp)
+        cpu_card = self._cpu_card()
+        self.add_column(*([hw, cpu_card, soft, sysp] if cpu_card else [hw, soft, sysp]))
         self.add_column(de, coll, stretch=2)
 
 

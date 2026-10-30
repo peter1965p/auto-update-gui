@@ -2,6 +2,7 @@
 import json
 import os
 import re
+import shutil
 import subprocess
 import urllib.parse
 import urllib.request
@@ -77,6 +78,29 @@ def resolve_provider(name):
     return best
 
 
+def flatpak_available():
+    return shutil.which("flatpak") is not None
+
+
+def search_flatpak(term):
+    """Flathub-Suche. Rückgabe wie search_repo, Quelle 'flatpak', Name = Anwendungs-ID."""
+    env = dict(os.environ, LC_ALL="C")
+    try:
+        out = subprocess.run(["flatpak", "search", "--columns=application,name,description,version", term],
+                             capture_output=True, text=True, env=env, timeout=25).stdout
+    except subprocess.TimeoutExpired:
+        raise RuntimeError("Flathub antwortet nicht (Netzwerk oder Appstream-Daten prüfen: flatpak update --appstream)")
+    have = set(subprocess.run(["flatpak", "list", "--app", "--columns=application"], capture_output=True, text=True,
+                              env=env).stdout.split())
+    rows = []
+    for line in out.splitlines():
+        p = [x.strip() for x in line.split("\t")]
+        if len(p) >= 2 and "." in p[0]:
+            rows.append(("flatpak", p[0], p[3] if len(p) > 3 else "", "%s – %s" % (p[1], p[2]) if len(p) > 2 and p[2] else p[1],
+                         p[0] in have))
+    return rows
+
+
 def installed_names():
     out = subprocess.run(["pacman", "-Qq"], capture_output=True, text=True).stdout
     return set(out.split())
@@ -113,7 +137,10 @@ class SearchWorker(QObject):
         # Ohne Suchbegriff mit Kategorie: nach den Stichwörtern der Kategorie suchen
         term = self.term or ("|".join(kw) if kw else "")
         try:
-            if self.scope in ("installed", "explicit", "foreign"):
+            if self.scope == "flatpak":
+                if self.term and len(self.term) >= 2:
+                    rows = search_flatpak(self.term)
+            elif self.scope in ("installed", "explicit", "foreign"):
                 rows = search_installed(term, self.scope)
             else:
                 if self.scope in ("all", "repo"):

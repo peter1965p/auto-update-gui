@@ -39,6 +39,8 @@ das System verwalten und automatische Updates planen – und bei allem sehen, wa
 ### System und Wartung
 - **Systemübersicht:** Hardware, installierte Desktops, **installierte Sammlungen** – jeweils mit „Entfernen“.
 - **Desktop-Berater:** bewertet KDE, GNOME, Xfce, Hyprland & Co. nach Profil und Hardware.
+- **Suche mit Flathub:** Repo-Treffer erscheinen sofort, das AUR folgt; ein eigener Filter durchsucht Flathub. Findet sich nichts, öffnet „Im Web suchen“ GitHub, Flathub oder das AUR im Browser – nichts wird automatisch von fremden Quellen gebaut.
+- **CPU-Optimierung (CachyOS):** erkennt, welche Repo-Stufe (v3, v4, znver4) deine CPU kann, vergleicht mit den eingetragenen Repos und schlägt eine Umstellung vor – oder warnt, wenn die Stufe zu hoch ist.
 - **Wartung:** verwaiste Pakete, Paket-Cache, `.pacnew`-Dateien, fehlgeschlagene Dienste, Flatpak.
 - **Systemerkennung** (Arch, CachyOS, EndeavourOS, Garuda, Manjaro, BlackArch, Artix) mit Hinweisen zu Zusatzquellen.
 
