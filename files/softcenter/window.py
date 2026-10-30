@@ -288,7 +288,8 @@ class MainWindow(QWidget):
         """Deinstallation mit Schutz und Vorschau: was würde alles entfernt, und wer braucht die Pakete noch?"""
         label = label or ", ".join(names)
         blocked = [n for n in names if backend.is_protected(n)]
-        if blocked:
+        names = [n for n in names if n not in blocked]
+        if not names:
             QMessageBox.warning(self, "Geschützt", "Diese Pakete sind systemkritisch und werden hier nicht entfernt:\n\n%s" % ", ".join(blocked))
             return
         ok, targets, _msg = backend.removal_preview(names)
@@ -301,6 +302,8 @@ class MainWindow(QWidget):
         text = "„%s“ entfernen?\n\nEntfernt werden %d Pakete" % (label, len(targets))
         text += (", davon %d als nicht mehr benötigte Abhängigkeiten:\n%s" % (len(extra), ", ".join(extra[:20]) + (" …" if len(extra) > 20 else ""))
                  if extra else ".")
+        if blocked:
+            text += "\n\nÜbersprungen (systemkritisch, geschützt): %s" % ", ".join(blocked)
         self.run_in_terminal("sudo pacman -Rns " + " ".join(shlex.quote(n) for n in names), text)
 
     def maint_orphans(self):
