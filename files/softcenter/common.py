@@ -10,7 +10,7 @@ from PyQt6.QtWidgets import (QAbstractButton, QApplication, QCheckBox, QComboBox
     QHBoxLayout, QLabel, QLineEdit, QMenu, QMessageBox, QPlainTextEdit, QProgressBar, QPushButton, QScrollArea,
     QSizePolicy, QSystemTrayIcon, QTextEdit, QTimeEdit, QVBoxLayout, QWidget)
 
-VERSION = "3.5.1"
+VERSION = "3.6.0"
 REPO = "peter1965p/auto-update-gui"
 CONF = "/etc/auto-update.conf"
 THEMES = [("Wie das System", "system"), ("Hell", "light"), ("Dunkel", "dark")]
@@ -140,6 +140,10 @@ def make_qss(t):
     QPushButton#primary:disabled {{ background: {t['border']}; color: {t['muted']}; }}
     QPushButton#flat {{ border: none; background: transparent; color: {t['muted']}; padding: 6px 10px; }}
     QPushButton#flat:hover {{ color: {t['text']}; background: {t['hover']}; }}
+    QPushButton#about {{ border: none; background: transparent; text-align: left; border-radius: 8px; margin: 4px 8px 0 8px; }}
+    QPushButton#about:hover {{ background: {t['hover']}; }}
+    QLabel#aboutName {{ color: {t['text']}; font-size: 12px; font-weight: 600; background: transparent; }}
+    QLabel#aboutRole {{ color: {t['muted']}; font-size: 11px; background: transparent; }}
     QComboBox, QTimeEdit {{ background: {t['input']}; border: 1px solid {t['border']}; border-radius: 8px;
                            padding: 4px 10px; min-height: 22px; }}
     QComboBox:disabled, QTimeEdit:disabled {{ color: {t['muted']}; }}

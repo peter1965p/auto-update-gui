@@ -8,6 +8,7 @@ from PyQt6.QtWidgets import (QApplication, QFrame, QHBoxLayout, QLabel, QListWid
                              QStackedWidget, QVBoxLayout, QWidget)
 
 from . import backend, common, hints, system_info
+from .about import AuthorCard
 from .catalog import CURATED, GROUPS
 from .common import apply_theme, cfg, make_label, set_state, theme
 from .maintenance import MaintenancePage
@@ -115,6 +116,7 @@ class MainWindow(QWidget):
         side.addWidget(sub)
         side.addWidget(self.nav, 1)
         side.addWidget(settings_btn)
+        side.addWidget(AuthorCard())
 
         content = QWidget()
         content.setObjectName("content")
